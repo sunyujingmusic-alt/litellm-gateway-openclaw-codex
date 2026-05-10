@@ -108,6 +108,7 @@ curl -sS -m 15 http://127.0.0.1:4002/v1/chat/completions \
 
 - `OAUTH_UPSTREAM_ACCOUNT_ID` / `OAUTH_UPSTREAM_EMAIL` / `OAUTH_UPSTREAM_PLAN_TYPE` 会随当前选中的官方 ChatGPT 账户一起同步，便于后续做配额观测与账号绑定。
 - `scripts/query_openclaw_codex_quota.py` 参考了 `cc-switch` 的 `wham/usage` 查询思路：直接使用当前 OAuth access token + `ChatGPT-Account-Id` 读取官方 5 小时 / 7 天窗口。
+- `gpt-5.4-oauth` / `gpt-5.4-router-test-oauth` 已显式启用 `drop_params: true` + `additional_drop_params: [metadata]`，用于修复 LiteLLM grouped fallback 到官方 Codex OAuth 时的 `Unsupported parameter: metadata`。
 
 
 ### 4) 状态接口说明

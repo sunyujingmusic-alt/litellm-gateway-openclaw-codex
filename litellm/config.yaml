@@ -16,6 +16,9 @@ model_list:
       model: openai/gpt-5.4
       api_base: os.environ/OAUTH_UPSTREAM_BASE_URL
       api_key: os.environ/OAUTH_UPSTREAM_API_KEY
+      drop_params: true
+      additional_drop_params:
+        - metadata
 
   - model_name: gpt-5.4-gmn
     litellm_params:
