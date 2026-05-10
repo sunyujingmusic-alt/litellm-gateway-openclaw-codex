@@ -36,6 +36,7 @@
 - `scripts/query_openclaw_codex_quota.py`：查询官方 `wham/usage`（5h / 7d）
 - `scripts/openclaw_codex_status_api.py`：本地状态接口
 - `scripts/backup_litellm_gateway_to_nas.sh`：源码备份到 NAS
+- `scripts/drill_codex_failover.sh`：受控 fallback 演练脚本
 
 OpenClaw 凭据：
 
@@ -185,6 +186,20 @@ docker compose up -d
 ```bash
 launchctl print gui/$(id -u)/com.sunyujing.litellm-codex-profile-sync | sed -n '1,120p'
 launchctl print gui/$(id -u)/com.sunyujing.litellm-codex-status-api | sed -n '1,120p'
+```
+
+### 5.8 运行 fallback 演练
+
+```bash
+cd /Users/sunyujing/litellm-gateway
+./scripts/drill_codex_failover.sh all
+```
+
+单独测试：
+
+```bash
+./scripts/drill_codex_failover.sh oauth
+./scripts/drill_codex_failover.sh gmn
 ```
 
 ---

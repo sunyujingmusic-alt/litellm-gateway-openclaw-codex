@@ -146,3 +146,17 @@ cd /Users/sunyujing/litellm-gateway
 默认不包含：`.env`、`.env.codex-oauth-gmn.test`、`logs/`、`tmp/`、`.venv/`、`__pycache__/`。
 
 更完整说明见：`运维手册-OpenClaw-Codex-LiteLLM.md`
+
+### 6) 运行 fallback drill
+
+```bash
+cd /Users/sunyujing/litellm-gateway
+./scripts/drill_codex_failover.sh all
+```
+
+分别单测：
+
+```bash
+./scripts/drill_codex_failover.sh oauth
+./scripts/drill_codex_failover.sh gmn
+```
