@@ -1,0 +1,10 @@
+.env
+runtime/
+
+.env.codex-oauth-gmn.test
+logs/
+tmp/
+.venv/
+__pycache__/
+CHROME_PLUS_AUTO_FOLLOW_PROGRESS_2026-05-10.md
+scripts/.watch_openclaw_codex_profile_state.json

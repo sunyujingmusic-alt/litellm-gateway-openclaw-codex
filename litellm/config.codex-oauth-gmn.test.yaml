@@ -1,0 +1,45 @@
+model_list:
+  - model_name: gpt-5.4-router-test
+    litellm_params:
+      model: openai/gpt-5.4
+      api_base: os.environ/CCODEX_UPSTREAM_BASE_URL
+      api_key: os.environ/CCODEX_UPSTREAM_API_KEY
+
+  - model_name: gpt-5.4-router-test-ccodex
+    litellm_params:
+      model: openai/gpt-5.4
+      api_base: os.environ/CCODEX_UPSTREAM_BASE_URL
+      api_key: os.environ/CCODEX_UPSTREAM_API_KEY
+
+  - model_name: gpt-5.4-router-test-oauth
+    litellm_params:
+      model: openai/gpt-5.4
+      api_base: os.environ/OAUTH_UPSTREAM_BASE_URL
+      api_key: os.environ/OAUTH_UPSTREAM_API_KEY
+
+  - model_name: gpt-5.4-router-test-gmn
+    litellm_params:
+      model: openai/gpt-5.4
+      api_base: os.environ/GMN_UPSTREAM_BASE_URL
+      api_key: os.environ/GMN_UPSTREAM_API_KEY
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 0
+  timeout: 15
+  stream_timeout: 15
+  max_fallbacks: 2
+  allowed_fails: 2
+  cooldown_time: 300
+  redis_url: os.environ/TEST_REDIS_URL
+  fallbacks:
+    - gpt-5.4-router-test:
+        - gpt-5.4-router-test-oauth
+        - gpt-5.4-router-test-gmn
+
+general_settings:
+  master_key: os.environ/GATEWAY_API_KEY
+  drop_params: true
+
+litellm_settings:
+  set_verbose: false

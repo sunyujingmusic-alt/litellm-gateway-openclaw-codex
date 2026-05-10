@@ -1,0 +1,49 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: litellm-router-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - no
+    ports:
+      - "127.0.0.1:6380:6379"
+    networks:
+      - gateway
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm-router-prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      no_proxy: ""
+      all_proxy: ""
+    command:
+      - --config
+      - /app/config.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:4002:4000"
+    networks:
+      - gateway
+
+networks:
+  gateway:
+    driver: bridge
