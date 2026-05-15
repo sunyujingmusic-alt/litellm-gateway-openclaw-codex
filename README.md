@@ -1,16 +1,16 @@
 # Local LiteLLM Gateway
 
-正式生产口径：`OpenClaw -> LiteLLM(127.0.0.1:4002) -> ccodex -> OpenAI OAuth Codex -> gmn`
+正式生产口径：`OpenClaw -> LiteLLM(127.0.0.1:4002) -> ccodex -> popcorn -> OpenAI OAuth Codex -> gmn`
 
 ## 当前职责
 
 - OpenClaw 顶层只连本机 LiteLLM：`http://127.0.0.1:4002/v1`
-- LiteLLM 内部负责三跳 failover / failback
+- LiteLLM 内部负责四跳 failover / failback
 - Redis 持久化 Router cooldown，避免容器重启后丢失熔断状态
 
 ## 关键文件
 
-- `litellm/config.yaml`：生产三跳路由
+- `litellm/config.yaml`：生产四跳路由
 - `docker-compose.yml`：生产容器编排（`litellm-router-prod` / `litellm-router-redis`）
 - `.env`：生产上游凭据与当前 OAuth access token
 - `.env.codex-oauth-gmn.test`：4018 测试路由专用环境变量
@@ -26,8 +26,9 @@
 ## 生产路由规则
 
 - 主路：`gpt-5.4` -> `ccodex`
-- 第一备用：`gpt-5.4-oauth`
-- 第二备用：`gpt-5.4-gmn`
+- 第一备用：`gpt-5.4-popcorn`
+- 第二备用：`gpt-5.4-oauth`
+- 第三备用：`gpt-5.4-gmn`
 - Router 参数：`allowed_fails=2`、`cooldown_time=300`、`num_retries=0`
 - Redis：生产 `redis://redis:6379`；测试 `redis://host.docker.internal:6380/1`
 
@@ -88,9 +89,11 @@ docker compose up -d
 
 ```bash
 curl -sS http://127.0.0.1:4010/healthz
+open http://127.0.0.1:4010/
 curl -sS http://127.0.0.1:4010/summary.txt
 curl -sS http://127.0.0.1:4010/summary
 curl -sS http://127.0.0.1:4010/status | jq '.summary'
+curl -sS http://127.0.0.1:4010/router-config
 curl -sS http://127.0.0.1:4010/quota
 curl -sS -m 5 http://127.0.0.1:4002/health/liveliness
 curl -sS -m 5 http://127.0.0.1:4002/v1/models -H 'Authorization: Bearer local-litellm-gateway'
@@ -114,6 +117,8 @@ curl -sS -m 15 http://127.0.0.1:4002/v1/chat/completions \
 ### 4) 状态接口说明
 
 - `GET /healthz`：状态 API 自身 + LiteLLM 健康检查；若 LiteLLM 不健康返回 `503`
+- `GET /`：WebUI 首页，可直接查看和调整生产 LiteLLM 的主模型/备用模型顺序
+- `GET /`：WebUI 首页，可直接查看和调整生产 LiteLLM 的主模型/备用模型顺序，也可编辑单个中转站的名称、请求地址、API key
 - `GET /summary`：适合程序消费的摘要 JSON
 - `GET /summary.txt`：适合人直接看的单行摘要
 - `GET /status`：完整 JSON，包含：
@@ -122,12 +127,15 @@ curl -sS -m 15 http://127.0.0.1:4002/v1/chat/completions \
   - LiteLLM 当前绑定的 OAuth 账户元数据
   - 官方 `five_hour` / `seven_day` 配额窗口
   - `shouldResyncLiteLLM` 一致性判断
+- `GET /router-config`：当前生产 LiteLLM 的主模型与 fallback 顺序
+- `POST /router-config`：写回 `litellm/config.yaml` 并自动重启 `litellm-router-prod`
+- `POST /router-config/model`：更新单个中转站的名称、请求地址、API key，并自动重启 `litellm-router-prod`
 - `GET /quota`：只返回官方配额窗口原始结果
 
 默认地址：
 
 ```bash
-http://127.0.0.1:4010/status
+http://127.0.0.1:4010/
 ```
 
 ### 5) 备份源码到 NAS
@@ -157,6 +165,7 @@ cd /Users/sunyujing/litellm-gateway
 分别单测：
 
 ```bash
+./scripts/drill_codex_failover.sh popcorn
 ./scripts/drill_codex_failover.sh oauth
 ./scripts/drill_codex_failover.sh gmn
 ```

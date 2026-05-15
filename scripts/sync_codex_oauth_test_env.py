@@ -19,14 +19,18 @@ TEST_ENV = ROOT / '.env.codex-oauth-gmn.test'
 ORDERED_PROD_KEYS = [
     'CCODEX_UPSTREAM_BASE_URL',
     'CCODEX_UPSTREAM_API_KEY',
-    'GMN_UPSTREAM_BASE_URL',
-    'GMN_UPSTREAM_API_KEY',
+    'CLAUDECODER_UPSTREAM_BASE_URL',
+    'CLAUDECODER_UPSTREAM_API_KEY',
+    'POPCORN_UPSTREAM_BASE_URL',
+    'POPCORN_UPSTREAM_API_KEY',
     'OAUTH_UPSTREAM_BASE_URL',
     'OAUTH_UPSTREAM_API_KEY',
     'OAUTH_UPSTREAM_EXPIRES',
     'OAUTH_UPSTREAM_ACCOUNT_ID',
     'OAUTH_UPSTREAM_EMAIL',
     'OAUTH_UPSTREAM_PLAN_TYPE',
+    'GMN_UPSTREAM_BASE_URL',
+    'GMN_UPSTREAM_API_KEY',
     'GATEWAY_API_KEY',
     'PUBLIC_MODEL_NAME',
 ]
@@ -34,14 +38,18 @@ ORDERED_PROD_KEYS = [
 ORDERED_TEST_KEYS = [
     'CCODEX_UPSTREAM_BASE_URL',
     'CCODEX_UPSTREAM_API_KEY',
-    'GMN_UPSTREAM_BASE_URL',
-    'GMN_UPSTREAM_API_KEY',
+    'CLAUDECODER_UPSTREAM_BASE_URL',
+    'CLAUDECODER_UPSTREAM_API_KEY',
+    'POPCORN_UPSTREAM_BASE_URL',
+    'POPCORN_UPSTREAM_API_KEY',
     'OAUTH_UPSTREAM_BASE_URL',
     'OAUTH_UPSTREAM_API_KEY',
     'OAUTH_UPSTREAM_EXPIRES',
     'OAUTH_UPSTREAM_ACCOUNT_ID',
     'OAUTH_UPSTREAM_EMAIL',
     'OAUTH_UPSTREAM_PLAN_TYPE',
+    'GMN_UPSTREAM_BASE_URL',
+    'GMN_UPSTREAM_API_KEY',
     'GATEWAY_API_KEY',
     'TEST_REDIS_URL',
 ]
@@ -206,6 +214,10 @@ def build_env_contents(profile: dict, base: dict[str, str]) -> tuple[dict[str, s
 
     ccodex_base = base.get('CCODEX_UPSTREAM_BASE_URL') or base.get('PRIMARY_UPSTREAM_BASE_URL') or 'https://cdn2.ccodex.net/v1'
     ccodex_key = base.get('CCODEX_UPSTREAM_API_KEY') or base.get('PRIMARY_UPSTREAM_API_KEY') or ''
+    claudecoder_base = base.get('CLAUDECODER_UPSTREAM_BASE_URL') or 'https://china.claudecoder.me/v1'
+    claudecoder_key = base.get('CLAUDECODER_UPSTREAM_API_KEY') or ''
+    popcorn_base = base.get('POPCORN_UPSTREAM_BASE_URL') or 'https://sub2api.popcorn.wiki/v1'
+    popcorn_key = base.get('POPCORN_UPSTREAM_API_KEY') or ''
     gmn_base = base.get('GMN_UPSTREAM_BASE_URL') or base.get('BACKUP_UPSTREAM_BASE_URL') or 'https://gmn.chuangzuoli.com/v1'
     gmn_key = base.get('GMN_UPSTREAM_API_KEY') or base.get('BACKUP_UPSTREAM_API_KEY') or ''
     gateway_key = base.get('GATEWAY_API_KEY') or 'local-litellm-gateway'
@@ -215,14 +227,18 @@ def build_env_contents(profile: dict, base: dict[str, str]) -> tuple[dict[str, s
     common = {
         'CCODEX_UPSTREAM_BASE_URL': ccodex_base,
         'CCODEX_UPSTREAM_API_KEY': ccodex_key,
-        'GMN_UPSTREAM_BASE_URL': gmn_base,
-        'GMN_UPSTREAM_API_KEY': gmn_key,
+        'CLAUDECODER_UPSTREAM_BASE_URL': claudecoder_base,
+        'CLAUDECODER_UPSTREAM_API_KEY': claudecoder_key,
+        'POPCORN_UPSTREAM_BASE_URL': popcorn_base,
+        'POPCORN_UPSTREAM_API_KEY': popcorn_key,
         'OAUTH_UPSTREAM_BASE_URL': auth_base,
         'OAUTH_UPSTREAM_API_KEY': access,
         'OAUTH_UPSTREAM_EXPIRES': expires,
         'OAUTH_UPSTREAM_ACCOUNT_ID': account_id,
         'OAUTH_UPSTREAM_EMAIL': email,
         'OAUTH_UPSTREAM_PLAN_TYPE': plan_type,
+        'GMN_UPSTREAM_BASE_URL': gmn_base,
+        'GMN_UPSTREAM_API_KEY': gmn_key,
         'GATEWAY_API_KEY': gateway_key,
     }
 

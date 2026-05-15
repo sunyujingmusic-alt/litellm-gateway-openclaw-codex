@@ -9,20 +9,24 @@ MODE=${1:-all}
 TMPDIR=$(mktemp -d)
 
 cleanup() {
-  docker rm -f litellm-router-drill-fallback-oauth litellm-router-drill-fallback-gmn >/dev/null 2>&1 || true
+  docker rm -f litellm-router-drill-fallback-claudecoder litellm-router-drill-fallback-popcorn litellm-router-drill-fallback-oauth litellm-router-drill-fallback-gmn >/dev/null 2>&1 || true
   rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
 
 write_env() {
   local outfile="$1"
-  local disable_oauth="$2"
-  python3 - <<'PY' "$BASE_ENV" "$outfile" "$disable_oauth"
+  local disable_claudecoder="$2"
+  local disable_popcorn="$3"
+  local disable_oauth="$4"
+  python3 - <<'PY' "$BASE_ENV" "$outfile" "$disable_claudecoder" "$disable_popcorn" "$disable_oauth"
 from pathlib import Path
 import sys
 base_env = Path(sys.argv[1])
 outfile = Path(sys.argv[2])
-disable_oauth = sys.argv[3] == '1'
+disable_claudecoder = sys.argv[3] == '1'
+disable_popcorn = sys.argv[4] == '1'
+disable_oauth = sys.argv[5] == '1'
 lines = base_env.read_text(encoding='utf-8').splitlines()
 kv = {}
 for line in lines:
@@ -32,14 +36,22 @@ for line in lines:
     kv[k]=v
 kv['CCODEX_UPSTREAM_BASE_URL']='http://127.0.0.1:9/v1'
 kv['CCODEX_UPSTREAM_API_KEY']='invalid-ccodex'
+if disable_claudecoder:
+    kv['CLAUDECODER_UPSTREAM_BASE_URL']='http://127.0.0.1:9/v1'
+    kv['CLAUDECODER_UPSTREAM_API_KEY']='invalid-claudecoder'
+if disable_popcorn:
+    kv['POPCORN_UPSTREAM_BASE_URL']='http://127.0.0.1:9/v1'
+    kv['POPCORN_UPSTREAM_API_KEY']='invalid-popcorn'
 if disable_oauth:
     kv['OAUTH_UPSTREAM_BASE_URL']='http://127.0.0.1:9/v1'
     kv['OAUTH_UPSTREAM_API_KEY']='invalid-oauth'
 order = [
   'CCODEX_UPSTREAM_BASE_URL','CCODEX_UPSTREAM_API_KEY',
-  'GMN_UPSTREAM_BASE_URL','GMN_UPSTREAM_API_KEY',
+  'CLAUDECODER_UPSTREAM_BASE_URL','CLAUDECODER_UPSTREAM_API_KEY',
+  'POPCORN_UPSTREAM_BASE_URL','POPCORN_UPSTREAM_API_KEY',
   'OAUTH_UPSTREAM_BASE_URL','OAUTH_UPSTREAM_API_KEY','OAUTH_UPSTREAM_EXPIRES',
   'OAUTH_UPSTREAM_ACCOUNT_ID','OAUTH_UPSTREAM_EMAIL','OAUTH_UPSTREAM_PLAN_TYPE',
+  'GMN_UPSTREAM_BASE_URL','GMN_UPSTREAM_API_KEY',
   'GATEWAY_API_KEY','TEST_REDIS_URL'
 ]
 outfile.write_text('\n'.join(f'{k}={kv[k]}' for k in order if k in kv)+'\n', encoding='utf-8')
@@ -48,15 +60,17 @@ PY
 
 run_case() {
   local case_name="$1"
-  local disable_oauth="$2"
-  local port="$3"
-  local cname="$4"
-  local expected_base="$5"
+  local disable_claudecoder="$2"
+  local disable_popcorn="$3"
+  local disable_oauth="$4"
+  local port="$5"
+  local cname="$6"
+  local expected_base="$7"
   local envfile="$TMPDIR/${case_name}.env"
   local headers="$TMPDIR/${case_name}.headers.txt"
   local body="$TMPDIR/${case_name}.body.txt"
 
-  write_env "$envfile" "$disable_oauth"
+  write_env "$envfile" "$disable_claudecoder" "$disable_popcorn" "$disable_oauth"
   docker rm -f "$cname" >/dev/null 2>&1 || true
   docker run -d \
     --name "$cname" \
@@ -98,18 +112,26 @@ run_case() {
 }
 
 case "$MODE" in
+  claudecoder)
+    run_case claudecoder 0 0 0 4023 litellm-router-drill-fallback-claudecoder https://china.claudecoder.me/v1
+    ;;
+  popcorn)
+    run_case popcorn 1 0 0 4024 litellm-router-drill-fallback-popcorn https://sub2api.popcorn.wiki/v1
+    ;;
   oauth)
-    run_case oauth 0 4025 litellm-router-drill-fallback-oauth https://chatgpt.com/backend-api/codex
+    run_case oauth 1 1 0 4025 litellm-router-drill-fallback-oauth https://chatgpt.com/backend-api/codex
     ;;
   gmn)
-    run_case gmn 1 4026 litellm-router-drill-fallback-gmn https://gmn.chuangzuoli.com/v1
+    run_case gmn 1 1 1 4026 litellm-router-drill-fallback-gmn https://gmn.chuangzuoli.com/v1
     ;;
   all)
-    run_case oauth 0 4025 litellm-router-drill-fallback-oauth https://chatgpt.com/backend-api/codex
-    run_case gmn 1 4026 litellm-router-drill-fallback-gmn https://gmn.chuangzuoli.com/v1
+    run_case claudecoder 0 0 0 4023 litellm-router-drill-fallback-claudecoder https://china.claudecoder.me/v1
+    run_case popcorn 1 0 0 4024 litellm-router-drill-fallback-popcorn https://sub2api.popcorn.wiki/v1
+    run_case oauth 1 1 0 4025 litellm-router-drill-fallback-oauth https://chatgpt.com/backend-api/codex
+    run_case gmn 1 1 1 4026 litellm-router-drill-fallback-gmn https://gmn.chuangzuoli.com/v1
     ;;
   *)
-    echo "Usage: $0 [oauth|gmn|all]" >&2
+    echo "Usage: $0 [claudecoder|popcorn|oauth|gmn|all]" >&2
     exit 2
     ;;
 esac

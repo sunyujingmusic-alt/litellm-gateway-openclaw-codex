@@ -1,48 +1,64 @@
 model_list:
-  - model_name: gpt-5.4
-    litellm_params:
-      model: openai/gpt-5.4
-      api_base: os.environ/CCODEX_UPSTREAM_BASE_URL
-      api_key: os.environ/CCODEX_UPSTREAM_API_KEY
-
-  - model_name: gpt-5.4-ccodex
-    litellm_params:
-      model: openai/gpt-5.4
-      api_base: os.environ/CCODEX_UPSTREAM_BASE_URL
-      api_key: os.environ/CCODEX_UPSTREAM_API_KEY
-
-  - model_name: gpt-5.4-oauth
-    litellm_params:
-      model: openai/gpt-5.4
-      api_base: os.environ/OAUTH_UPSTREAM_BASE_URL
-      api_key: os.environ/OAUTH_UPSTREAM_API_KEY
-      drop_params: true
-      additional_drop_params:
-        - metadata
-
-  - model_name: gpt-5.4-gmn
-    litellm_params:
-      model: openai/gpt-5.4
-      api_base: os.environ/GMN_UPSTREAM_BASE_URL
-      api_key: os.environ/GMN_UPSTREAM_API_KEY
-
+- model_name: gpt-5.4
+  litellm_params:
+    model: openai/gpt-5.4
+    api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
+    api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
+    use_chat_completions_api: true
+    timeout: 45
+    stream_timeout: 45
+    drop_params: true
+    additional_drop_params:
+    - metadata
+- model_name: gpt-5.4-ccodex
+  litellm_params:
+    model: openai/gpt-5.4
+    api_base: os.environ/CCODEX_UPSTREAM_BASE_URL
+    api_key: os.environ/CCODEX_UPSTREAM_API_KEY
+- model_name: gpt-5.4-fastCode
+  litellm_params:
+    model: openai/gpt-5.4
+    api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
+    api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
+    use_chat_completions_api: true
+    timeout: 45
+    stream_timeout: 45
+    drop_params: true
+    additional_drop_params:
+    - metadata
+- model_name: gpt-5.4-popcorn
+  litellm_params:
+    model: openai/gpt-5.4
+    api_base: os.environ/POPCORN_UPSTREAM_BASE_URL
+    api_key: os.environ/POPCORN_UPSTREAM_API_KEY
+- model_name: gpt-5.4-oauth
+  litellm_params:
+    model: openai/gpt-5.4
+    api_base: os.environ/OAUTH_UPSTREAM_BASE_URL
+    api_key: os.environ/OAUTH_UPSTREAM_API_KEY
+    drop_params: true
+    additional_drop_params:
+    - metadata
+- model_name: gpt-5.4-gmn
+  litellm_params:
+    model: openai/gpt-5.4
+    api_base: os.environ/GMN_UPSTREAM_BASE_URL
+    api_key: os.environ/GMN_UPSTREAM_API_KEY
 router_settings:
   routing_strategy: simple-shuffle
   num_retries: 0
   timeout: 15
   stream_timeout: 15
-  max_fallbacks: 2
+  max_fallbacks: 4
   allowed_fails: 2
   cooldown_time: 300
   redis_url: os.environ/REDIS_URL
   fallbacks:
-    - gpt-5.4:
-        - gpt-5.4-oauth
-        - gpt-5.4-gmn
-
+  - gpt-5.4:
+    - gpt-5.4-popcorn
+    - gpt-5.4-gmn
 general_settings:
   master_key: os.environ/GATEWAY_API_KEY
   drop_params: true
-
 litellm_settings:
   set_verbose: false
