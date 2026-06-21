@@ -30,7 +30,7 @@ WATCHER_STATE_PATH = ROOT / 'scripts' / '.watch_openclaw_codex_profile_state.jso
 LITELLM_CONFIG_PATH = ROOT / 'litellm' / 'config.yaml'
 LITELLM_COMPOSE_PATH = ROOT / 'docker-compose.yml'
 LITELLM_HEALTH_URL = 'http://127.0.0.1:4002/health/liveliness'
-DEFAULT_HOST = '127.0.0.1'
+DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 4010
 DOCKER_BIN = '/opt/homebrew/bin/docker'
 
@@ -615,7 +615,7 @@ UI_HTML = """<!doctype html>
         <div class="note">
           当前约定：
           <br>1. 只修改 <code>gpt-5.4</code> 这条逻辑链路。
-          <br>2. 不删除任何现有上游参数定义，只控制是否参与当前调用顺序。
+          <br>2. 默认只控制是否参与当前调用顺序；仅当中转站处于 bypassed 时，才允许在编辑窗口中彻底删除。
           <br>3. 保存后由本地服务自动重启生产 LiteLLM 容器。
         </div>
       </aside>
@@ -646,6 +646,7 @@ UI_HTML = """<!doctype html>
       </div>
       <div class="modal-actions">
         <button class="btn-ghost" id="edit-cancel-btn" data-tooltip="放弃本次修改并关闭窗口。">取消</button>
+        <button class="btn-danger-soft" id="edit-delete-btn" data-tooltip="仅允许删除当前处于 bypassed 的中转站。删除后会移除该模型定义及其环境变量，并自动重启 LiteLLM。" hidden>删除中转站</button>
         <button class="btn-soft" id="edit-test-btn" data-tooltip="使用当前输入的名称、请求地址和 API key 做一次真实连通性测试，不会保存配置。">测试当前中转站</button>
         <button class="btn-main" id="edit-save-btn" data-tooltip="立即写入这个中转站的新参数，并重启 LiteLLM。这个操作会立刻生效，不依赖主界面的保存按钮。">保存并重启 LiteLLM</button>
       </div>
@@ -1114,12 +1115,15 @@ UI_HTML = """<!doctype html>
       const model = (state.order?.models || []).find(item => item.model_name === modelName);
       if (!model) return;
       state.editingModel = model;
+      const deleteButton = document.getElementById('edit-delete-btn');
       document.getElementById('edit-title').textContent = '编辑中转站: ' + model.model_name;
       document.getElementById('edit-model-name').value = model.model_name || '';
       document.getElementById('edit-base-url').value = model.baseUrlValue || '';
       document.getElementById('edit-api-key').value = '';
       document.getElementById('edit-base-url-key').textContent = model.baseUrlEnvKey ? ('ENV: ' + model.baseUrlEnvKey) : '';
       document.getElementById('edit-api-key-note').textContent = model.apiKeyEnvKey ? ('当前已配置: ' + (model.apiKeyMasked || 'empty') + ' | ENV: ' + model.apiKeyEnvKey) : '';
+      deleteButton.hidden = !!model.enabled;
+      deleteButton.disabled = false;
       const overlay = document.getElementById('edit-overlay');
       overlay.classList.add('open');
       overlay.setAttribute('aria-hidden', 'false');
@@ -1191,6 +1195,37 @@ UI_HTML = """<!doctype html>
       }
     }
 
+    async function deleteEditModel() {
+      if (!state.editingModel) return;
+      if (state.editingModel.enabled) {
+        setMessage('当前处于 active 的中转站不能删除。请先切到 bypassed。', 'bad');
+        return;
+      }
+      const modelName = state.editingModel.model_name || '';
+      const confirmed = window.confirm('确认删除中转站 "' + modelName + '" 吗？该操作会移除模型定义和对应环境变量，并重启 LiteLLM。');
+      if (!confirmed) {
+        return;
+      }
+      const button = document.getElementById('edit-delete-btn');
+      button.disabled = true;
+      setMessage('正在删除中转站并重启 LiteLLM...', 'warn');
+      try {
+        await fetchJson('/router-config/model/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            upstreamId: state.editingModel.upstreamId,
+          }),
+        });
+        closeEdit();
+        await refreshAfterImmediateModelChange('中转站已删除，LiteLLM 已重启。');
+      } catch (err) {
+        setMessage('删除中转站失败：' + err.message, 'bad');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function closeNewModel() {
       const overlay = document.getElementById('new-model-overlay');
       overlay.classList.remove('open');
@@ -1242,6 +1277,7 @@ UI_HTML = """<!doctype html>
     document.getElementById('pending-reload-btn').addEventListener('click', loadAll);
     document.getElementById('edit-close-btn').addEventListener('click', closeEdit);
     document.getElementById('edit-cancel-btn').addEventListener('click', closeEdit);
+    document.getElementById('edit-delete-btn').addEventListener('click', deleteEditModel);
     document.getElementById('edit-test-btn').addEventListener('click', testEditConnection);
     document.getElementById('edit-save-btn').addEventListener('click', saveEdit);
     document.getElementById('add-model-btn').addEventListener('click', openNewModel);
@@ -1305,6 +1341,23 @@ def update_env_values(path: Path, updates: dict[str, str]) -> None:
         next_lines.append(f'{key}={value}')
     content = '\n'.join(next_lines).rstrip() + '\n'
     path.write_text(content, encoding='utf-8')
+
+
+def remove_env_keys(path: Path, keys_to_remove: list[str]) -> None:
+    keys = {key.strip() for key in keys_to_remove if key and key.strip()}
+    if not path.exists() or not keys:
+        return
+    next_lines: list[str] = []
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if not line or line.lstrip().startswith('#') or '=' not in line:
+            next_lines.append(line)
+            continue
+        key, _value = line.split('=', 1)
+        if key.strip() in keys:
+            continue
+        next_lines.append(line)
+    content = '\n'.join(next_lines).rstrip()
+    path.write_text((content + '\n') if content else '', encoding='utf-8')
 
 
 def slugify_upstream_id(value: str) -> str:
@@ -1870,6 +1923,54 @@ def add_new_model(model_name: str, base_url: str, api_key: str) -> dict[str, Any
     return get_model_order(config)
 
 
+def delete_model(upstream_id: str) -> dict[str, Any]:
+    upstream_id = upstream_id.strip().lower()
+    config = get_litellm_config()
+    if not config:
+        raise ValueError('config_unavailable')
+    order = get_model_order(config)
+    target = next((item for item in order.get('models') or [] if str(item.get('upstreamId') or '') == upstream_id), None)
+    if not target:
+        raise ValueError('invalid_upstream_id')
+    if bool(target.get('enabled')):
+        raise ValueError('cannot_delete_active_model')
+    target_model_name = str(target.get('model_name') or '').strip()
+    if not target_model_name:
+        raise ValueError('model_not_found')
+    model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
+    next_model_list = [
+        item for item in model_list
+        if not (isinstance(item, dict) and str(item.get('model_name') or '').strip() == target_model_name)
+    ]
+    if len(next_model_list) == len(model_list):
+        raise ValueError('model_not_found')
+    config['model_list'] = next_model_list
+    router_settings = config.get('router_settings') if isinstance(config.get('router_settings'), dict) else {}
+    fallbacks = router_settings.get('fallbacks') if isinstance(router_settings.get('fallbacks'), list) else []
+    next_fallbacks = []
+    for item in fallbacks:
+        if not isinstance(item, dict):
+            next_fallbacks.append(item)
+            continue
+        updated_item = {}
+        for key, value in item.items():
+            if key == target_model_name:
+                continue
+            if isinstance(value, list):
+                updated_item[key] = [entry for entry in value if str(entry).strip() != target_model_name]
+            else:
+                updated_item[key] = value
+        next_fallbacks.append(updated_item)
+    router_settings['fallbacks'] = next_fallbacks
+    config['router_settings'] = router_settings
+    dump_yaml(LITELLM_CONFIG_PATH, config)
+    remove_env_keys(ENV_PATH, [
+        str(target.get('baseUrlEnvKey') or ''),
+        str(target.get('apiKeyEnvKey') or ''),
+    ])
+    return get_model_order(config)
+
+
 def restart_litellm() -> dict[str, Any]:
     completed = subprocess.run(
         [DOCKER_BIN, 'restart', 'litellm-router-prod'],
@@ -2112,6 +2213,22 @@ class Handler(BaseHTTPRequestHandler):
                     'message': 'model_probe_ok',
                     'probe': probe,
                 }, status=200)
+            except Exception as exc:
+                self._send_json({'ok': False, 'error': str(exc)}, 400)
+            return
+        if self.path == '/router-config/model/delete':
+            try:
+                payload = self._read_json_body()
+                upstream_id = str(payload.get('upstreamId') or '').strip().lower()
+                order = delete_model(upstream_id)
+                restart = restart_litellm()
+                status_code = 200 if restart.get('ok') else 500
+                self._send_json({
+                    'ok': bool(restart.get('ok')),
+                    'message': 'model_deleted_and_restarted' if restart.get('ok') else 'model_deleted_but_restart_failed',
+                    'restart': restart,
+                    **order,
+                }, status=status_code)
             except Exception as exc:
                 self._send_json({'ok': False, 'error': str(exc)}, 400)
             return

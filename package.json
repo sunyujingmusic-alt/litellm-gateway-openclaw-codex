@@ -1,0 +1,11 @@
+{
+  "name": "litellm-gateway-openclaw-codex",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "playwright test tests/router-panel.spec.js --reporter=line"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  }
+}

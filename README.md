@@ -117,8 +117,7 @@ curl -sS -m 15 http://127.0.0.1:4002/v1/chat/completions \
 ### 4) 状态接口说明
 
 - `GET /healthz`：状态 API 自身 + LiteLLM 健康检查；若 LiteLLM 不健康返回 `503`
-- `GET /`：WebUI 首页，可直接查看和调整生产 LiteLLM 的主模型/备用模型顺序
-- `GET /`：WebUI 首页，可直接查看和调整生产 LiteLLM 的主模型/备用模型顺序，也可编辑单个中转站的名称、请求地址、API key
+- `GET /`：WebUI 首页，可直接查看和调整生产 LiteLLM 的主模型/备用模型顺序，也可编辑单个中转站的名称、请求地址、API key；只有处于 `bypassed` 的中转站会显示“删除中转站”
 - `GET /summary`：适合程序消费的摘要 JSON
 - `GET /summary.txt`：适合人直接看的单行摘要
 - `GET /status`：完整 JSON，包含：
@@ -130,6 +129,7 @@ curl -sS -m 15 http://127.0.0.1:4002/v1/chat/completions \
 - `GET /router-config`：当前生产 LiteLLM 的主模型与 fallback 顺序
 - `POST /router-config`：写回 `litellm/config.yaml` 并自动重启 `litellm-router-prod`
 - `POST /router-config/model`：更新单个中转站的名称、请求地址、API key，并自动重启 `litellm-router-prod`
+- `POST /router-config/model/delete`：删除指定中转站的模型定义与对应环境变量，并自动重启 `litellm-router-prod`；active 中转站会被后端拒绝删除
 - `GET /quota`：只返回官方配额窗口原始结果
 
 默认地址：
@@ -168,4 +168,23 @@ cd /Users/sunyujing/litellm-gateway
 ./scripts/drill_codex_failover.sh popcorn
 ./scripts/drill_codex_failover.sh oauth
 ./scripts/drill_codex_failover.sh gmn
+```
+
+### 7) 运行 Router Panel E2E
+
+安装依赖：
+
+```bash
+cd /Users/sunyujing/litellm-gateway
+npm install
+npx playwright install
+```
+
+默认会连接本机测试副本 `http://127.0.0.1:4110`，并使用 `/Users/sunyujing/litellm-gateway-ui-test` 作为可回滚的测试数据目录；也可以通过环境变量覆盖：
+
+```bash
+cd /Users/sunyujing/litellm-gateway
+LITELLM_UI_TEST_BASE_URL=http://127.0.0.1:4110 \
+LITELLM_UI_TEST_ROOT=/Users/sunyujing/litellm-gateway-ui-test \
+npm run test:e2e
 ```
