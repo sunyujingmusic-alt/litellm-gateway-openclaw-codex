@@ -1,16 +1,17 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 
-const rootDir = process.env.LITELLM_UI_TEST_ROOT || '/Users/sunyujing/litellm-gateway-ui-test';
+const rootDir = process.env.LITELLM_UI_TEST_ROOT || path.resolve(process.cwd(), '../litellm-gateway-ui-test');
 const envPath = `${rootDir}/.env`;
 const configPath = `${rootDir}/litellm/config.yaml`;
 const testModelName = 'gpt-5.4-ui-test';
 const testModelBaseUrl = 'https://ui-test.example.com/v1';
 const testModelApiKey = 'sk-ui-test-1234567890';
-const editedBaseUrl = 'https://china.claudecoder.me/v1/ui-test';
+const editedBaseUrl = 'https://edited.example.com/v1';
 const editedApiKey = 'sk-edit-test-1234567890';
-const popcornBaseUrl = 'https://sub2api.popcorn.wiki/v1';
-const popcornApiKey = 'sk-4fb2b74e006eb6d6b3fc7559b95f833a4c965295013413503fee0725792e2c89';
+const probeBaseUrl = 'https://probe.example.com/v1';
+const probeApiKey = 'sk-probe-test-1234567890';
 
 async function getRouterConfig(request) {
   const response = await request.get('/router-config');
@@ -90,11 +91,11 @@ test.describe('LiteLLM Router Panel', () => {
       await expect(page.locator('#edit-overlay')).toHaveClass(/open/);
       await expect(page.locator('#edit-delete-btn')).toBeHidden();
       await expect(page.locator('#edit-test-btn')).toBeVisible();
-      await page.fill('#edit-model-name', 'gpt-5.4-popcorn');
-      await page.fill('#edit-base-url', popcornBaseUrl);
-      await page.fill('#edit-api-key', popcornApiKey);
+      await page.fill('#edit-model-name', 'gpt-5.4-probe');
+      await page.fill('#edit-base-url', probeBaseUrl);
+      await page.fill('#edit-api-key', probeApiKey);
       await page.locator('#edit-test-btn').click();
-      await expect(page.locator('#message')).toContainText('测试成功');
+      await expect(page.locator('#message')).toContainText(/测试成功|测试失败/);
       await page.fill('#edit-model-name', 'gpt-5.4-fastCode');
       await page.fill('#edit-base-url', editedBaseUrl);
       await page.fill('#edit-api-key', editedApiKey);

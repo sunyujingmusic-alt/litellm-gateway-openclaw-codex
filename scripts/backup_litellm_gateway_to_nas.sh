@@ -1,8 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT=/Users/sunyujing/litellm-gateway
-NAS_ROOT_DEFAULT="/Volumes/素材/TEMP/chu/codex余额查询/litellm-gateway-openclaw-codex"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NAS_ROOT_DEFAULT="${BACKUP_ROOT:-$ROOT/backups}"
 TS=$(date +%Y%m%d-%H%M%S)
 INCLUDE_SECRETS=0
 NAS_ROOT="$NAS_ROOT_DEFAULT"
@@ -51,9 +51,6 @@ if [[ "$INCLUDE_SECRETS" -eq 0 ]]; then
 fi
 
 rsync -a "${RSYNC_EXCLUDES[@]}" "$ROOT/" "$SRC_DEST/"
-
-cp -f "$HOME/Library/LaunchAgents/com.sunyujing.litellm-codex-profile-sync.plist" "$DOC_DEST/" 2>/dev/null || true
-cp -f "$HOME/Library/LaunchAgents/com.sunyujing.litellm-codex-status-api.plist" "$DOC_DEST/" 2>/dev/null || true
 
 cat > "$META_DEST/backup-info.json" <<EOF
 {

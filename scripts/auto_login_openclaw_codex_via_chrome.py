@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path('/Users/sunyujing/litellm-gateway')
+ROOT = Path(__file__).resolve().parents[1]
 SYNC_SCRIPT = ROOT / 'scripts' / 'sync_litellm_from_openclaw_codex.sh'
 PREFERRED_ACCOUNT_JSON = ROOT / 'tmp' / 'openai_plus_account_extracted.json'
 CHROME_HELPER = ROOT / 'scripts' / 'get_chrome_chatgpt_account.js'

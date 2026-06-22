@@ -8,9 +8,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
-ROOT = Path('/Users/sunyujing/litellm-gateway')
-AUTH_JSON = Path('/Users/sunyujing/.openclaw/agents/main/agent/auth-profiles.json')
-AUTH_STATE_JSON = Path('/Users/sunyujing/.openclaw/agents/main/agent/auth-state.json')
+ROOT = Path(__file__).resolve().parents[1]
+OPENCLAW_HOME = Path(os.environ.get('OPENCLAW_HOME') or (Path.home() / '.openclaw'))
+AUTH_JSON = OPENCLAW_HOME / 'agents' / 'main' / 'agent' / 'auth-profiles.json'
+AUTH_STATE_JSON = OPENCLAW_HOME / 'agents' / 'main' / 'agent' / 'auth-state.json'
 PREFERRED_ACCOUNT_JSON = ROOT / 'tmp' / 'openai_plus_account_extracted.json'
 CHROME_HELPER = ROOT / 'scripts' / 'get_chrome_chatgpt_account.js'
 PROD_ENV = ROOT / '.env'
@@ -212,13 +213,13 @@ def build_env_contents(profile: dict, base: dict[str, str]) -> tuple[dict[str, s
     if not access:
         raise SystemExit('selected openai-codex profile has empty access token')
 
-    ccodex_base = base.get('CCODEX_UPSTREAM_BASE_URL') or base.get('PRIMARY_UPSTREAM_BASE_URL') or 'https://cdn2.ccodex.net/v1'
+    ccodex_base = base.get('CCODEX_UPSTREAM_BASE_URL') or base.get('PRIMARY_UPSTREAM_BASE_URL') or 'https://primary-upstream.example.com/v1'
     ccodex_key = base.get('CCODEX_UPSTREAM_API_KEY') or base.get('PRIMARY_UPSTREAM_API_KEY') or ''
-    claudecoder_base = base.get('CLAUDECODER_UPSTREAM_BASE_URL') or 'https://china.claudecoder.me/v1'
+    claudecoder_base = base.get('CLAUDECODER_UPSTREAM_BASE_URL') or 'https://secondary-upstream.example.com/v1'
     claudecoder_key = base.get('CLAUDECODER_UPSTREAM_API_KEY') or ''
-    popcorn_base = base.get('POPCORN_UPSTREAM_BASE_URL') or 'https://sub2api.popcorn.wiki/v1'
+    popcorn_base = base.get('POPCORN_UPSTREAM_BASE_URL') or 'https://fallback-upstream-a.example.com/v1'
     popcorn_key = base.get('POPCORN_UPSTREAM_API_KEY') or ''
-    gmn_base = base.get('GMN_UPSTREAM_BASE_URL') or base.get('BACKUP_UPSTREAM_BASE_URL') or 'https://gmn.chuangzuoli.com/v1'
+    gmn_base = base.get('GMN_UPSTREAM_BASE_URL') or base.get('BACKUP_UPSTREAM_BASE_URL') or 'https://fallback-upstream-b.example.com/v1'
     gmn_key = base.get('GMN_UPSTREAM_API_KEY') or base.get('BACKUP_UPSTREAM_API_KEY') or ''
     gateway_key = base.get('GATEWAY_API_KEY') or 'local-litellm-gateway'
     public_model_name = base.get('PUBLIC_MODEL_NAME') or 'gpt-5.4'

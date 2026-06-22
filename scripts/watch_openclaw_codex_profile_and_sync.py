@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import hashlib
 import json
 import subprocess
@@ -8,8 +9,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path('/Users/sunyujing/litellm-gateway')
-AUTH_JSON = Path('/Users/sunyujing/.openclaw/agents/main/agent/auth-profiles.json')
+ROOT = Path(__file__).resolve().parents[1]
+OPENCLAW_HOME = Path(os.environ.get('OPENCLAW_HOME') or (Path.home() / '.openclaw'))
+AUTH_JSON = OPENCLAW_HOME / 'agents' / 'main' / 'agent' / 'auth-profiles.json'
 STATE_PATH = ROOT / 'scripts' / '.watch_openclaw_codex_profile_state.json'
 SYNC_SCRIPT = ROOT / 'scripts' / 'sync_litellm_from_openclaw_codex.sh'
 CHROME_HELPER = ROOT / 'scripts' / 'get_chrome_chatgpt_account.js'

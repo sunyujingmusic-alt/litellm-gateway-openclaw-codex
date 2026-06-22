@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import subprocess
 import time
@@ -17,7 +18,7 @@ from typing import Any
 
 import yaml
 
-ROOT = Path('/Users/sunyujing/litellm-gateway')
+ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = ROOT / 'scripts'
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -32,7 +33,7 @@ LITELLM_COMPOSE_PATH = ROOT / 'docker-compose.yml'
 LITELLM_HEALTH_URL = 'http://127.0.0.1:4002/health/liveliness'
 DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 4010
-DOCKER_BIN = '/opt/homebrew/bin/docker'
+DOCKER_BIN = shutil.which('docker') or '/opt/homebrew/bin/docker'
 
 ENTRY_MODEL = 'gpt-5.4'
 

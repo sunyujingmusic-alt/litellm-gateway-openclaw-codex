@@ -1,12 +1,16 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT=/Users/sunyujing/litellm-gateway
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_ENV="$ROOT/.env.codex-oauth-gmn.test"
 BASE_CONFIG="$ROOT/litellm/config.codex-oauth-gmn.test.yaml"
 MASTER_KEY=$(awk -F= '$1=="GATEWAY_API_KEY"{print $2}' "$BASE_ENV")
 MODE=${1:-all}
 TMPDIR=$(mktemp -d)
+
+env_value() {
+  awk -F= -v key="$1" '$1==key{print $2}' "$BASE_ENV"
+}
 
 cleanup() {
   docker rm -f litellm-router-drill-fallback-claudecoder litellm-router-drill-fallback-popcorn litellm-router-drill-fallback-oauth litellm-router-drill-fallback-gmn >/dev/null 2>&1 || true
@@ -113,22 +117,22 @@ run_case() {
 
 case "$MODE" in
   claudecoder)
-    run_case claudecoder 0 0 0 4023 litellm-router-drill-fallback-claudecoder https://china.claudecoder.me/v1
+    run_case claudecoder 0 0 0 4023 litellm-router-drill-fallback-claudecoder "$(env_value CLAUDECODER_UPSTREAM_BASE_URL)"
     ;;
   popcorn)
-    run_case popcorn 1 0 0 4024 litellm-router-drill-fallback-popcorn https://sub2api.popcorn.wiki/v1
+    run_case popcorn 1 0 0 4024 litellm-router-drill-fallback-popcorn "$(env_value POPCORN_UPSTREAM_BASE_URL)"
     ;;
   oauth)
     run_case oauth 1 1 0 4025 litellm-router-drill-fallback-oauth https://chatgpt.com/backend-api/codex
     ;;
   gmn)
-    run_case gmn 1 1 1 4026 litellm-router-drill-fallback-gmn https://gmn.chuangzuoli.com/v1
+    run_case gmn 1 1 1 4026 litellm-router-drill-fallback-gmn "$(env_value GMN_UPSTREAM_BASE_URL)"
     ;;
   all)
-    run_case claudecoder 0 0 0 4023 litellm-router-drill-fallback-claudecoder https://china.claudecoder.me/v1
-    run_case popcorn 1 0 0 4024 litellm-router-drill-fallback-popcorn https://sub2api.popcorn.wiki/v1
+    run_case claudecoder 0 0 0 4023 litellm-router-drill-fallback-claudecoder "$(env_value CLAUDECODER_UPSTREAM_BASE_URL)"
+    run_case popcorn 1 0 0 4024 litellm-router-drill-fallback-popcorn "$(env_value POPCORN_UPSTREAM_BASE_URL)"
     run_case oauth 1 1 0 4025 litellm-router-drill-fallback-oauth https://chatgpt.com/backend-api/codex
-    run_case gmn 1 1 1 4026 litellm-router-drill-fallback-gmn https://gmn.chuangzuoli.com/v1
+    run_case gmn 1 1 1 4026 litellm-router-drill-fallback-gmn "$(env_value GMN_UPSTREAM_BASE_URL)"
     ;;
   *)
     echo "Usage: $0 [claudecoder|popcorn|oauth|gmn|all]" >&2

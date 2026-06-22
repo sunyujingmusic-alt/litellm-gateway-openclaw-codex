@@ -11,3 +11,5 @@ scripts/.watch_openclaw_codex_profile_state.json
 node_modules/
 test-results/
 playwright-report/
+运维手册-*.md
+运维记录-*.md
