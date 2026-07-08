@@ -1,0 +1,188 @@
+name: litellm-gateway-gpt55-test
+
+services:
+  redis-test:
+    image: redis:7-alpine
+    container_name: litellm-router-gpt-5.5-test-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - no
+    ports:
+      - "127.0.0.1:6381:6379"
+
+  litellm-test:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm-router-gpt-5.5-test
+    restart: unless-stopped
+    depends_on:
+      - redis-test
+      - mock-primary
+      - mock-fallback1
+      - mock-fallback2
+      - mock-fallback3
+      - mock-fallback4
+    environment:
+      TEST_REDIS_URL: redis://redis-test:6379
+      GATEWAY_API_KEY: local-litellm-gateway
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      CCODEX_UPSTREAM_BASE_URL: http://mock-primary:8000/v1
+      CCODEX_UPSTREAM_API_KEY: sk-mock-primary
+      CLAUDECODER_UPSTREAM_BASE_URL: http://mock-fallback1:8000/v1
+      CLAUDECODER_UPSTREAM_API_KEY: sk-mock-fallback1
+      POPCORN_UPSTREAM_BASE_URL: http://mock-fallback2:8000/v1
+      POPCORN_UPSTREAM_API_KEY: sk-mock-fallback2
+      OAUTH_UPSTREAM_BASE_URL: http://mock-fallback3:8000/v1
+      OAUTH_UPSTREAM_API_KEY: sk-mock-fallback3
+      GMN_UPSTREAM_BASE_URL: http://mock-fallback4:8000/v1
+      GMN_UPSTREAM_API_KEY: sk-mock-fallback4
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      no_proxy: ""
+      all_proxy: ""
+    command:
+      - --config
+      - /app/config.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    volumes:
+      - ./litellm/config.gpt-5.5-router-test.yaml:/app/config.yaml:ro
+      - ./scripts/failover_stats_callback.py:/app/failover_stats_callback.py:ro
+      - ./logs/failover-stats:/app/failover-stats
+    ports:
+      - "127.0.0.1:4028:4000"
+
+  failover-stats-api:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-stats
+    restart: unless-stopped
+    depends_on:
+      - litellm-test
+    environment:
+      FAILOVER_STATS_HOST: 0.0.0.0
+      FAILOVER_STATS_PORT: "4129"
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      FAILOVER_STATS_PROMETHEUS_URL: http://litellm-test:4000/metrics/
+      FAILOVER_STATS_CHAIN: gpt-5.5-router-test,gpt-5.5-router-test-claudecoder,gpt-5.5-router-test-popcorn,gpt-5.5-router-test-oauth,gpt-5.5-router-test-gmn
+      FAILOVER_STATS_VUE_BUNDLE: /app/vendor/vue.global.prod.js
+      FAILOVER_STATS_SUBTITLE: 测试链路聚合看板，只读取 /failover-stats 的脱敏数据。
+      FAILOVER_STATS_ALLOW_RESET: "1"
+    command:
+      - python
+      - /app/failover_stats_api.py
+    volumes:
+      - ./scripts/failover_stats_api.py:/app/failover_stats_api.py:ro
+      - ./logs/failover-stats:/app/failover-stats
+      - ./node_modules/vue/dist:/app/vendor:ro
+    ports:
+      - "127.0.0.1:4128:4129"
+
+  failover-stats-proxy:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-stats-proxy
+    restart: unless-stopped
+    depends_on:
+      - litellm-test
+    environment:
+      FAILOVER_STATS_PROXY_HOST: 0.0.0.0
+      FAILOVER_STATS_PROXY_PORT: "4130"
+      FAILOVER_STATS_UPSTREAM_URL: http://litellm-test:4000
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+    command:
+      - python
+      - /app/failover_stats_proxy.py
+    volumes:
+      - ./scripts/failover_stats_proxy.py:/app/failover_stats_proxy.py:ro
+      - ./logs/failover-stats:/app/failover-stats
+    ports:
+      - "127.0.0.1:4138:4130"
+
+  mock-primary:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-mock-primary
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: primary
+      MOCK_UPSTREAM_STATE_FILE: /app/state/primary.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/failover-stats-test:/app/state
+    ports:
+      - "127.0.0.1:4210:8000"
+
+  mock-fallback1:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-mock-fallback1
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: fallback1
+      MOCK_UPSTREAM_STATE_FILE: /app/state/fallback1.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/failover-stats-test:/app/state
+    ports:
+      - "127.0.0.1:4211:8000"
+
+  mock-fallback2:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-mock-fallback2
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: fallback2
+      MOCK_UPSTREAM_STATE_FILE: /app/state/fallback2.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/failover-stats-test:/app/state
+    ports:
+      - "127.0.0.1:4212:8000"
+
+  mock-fallback3:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-mock-fallback3
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: fallback3
+      MOCK_UPSTREAM_STATE_FILE: /app/state/fallback3.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/failover-stats-test:/app/state
+    ports:
+      - "127.0.0.1:4213:8000"
+
+  mock-fallback4:
+    image: python:3.13-alpine
+    container_name: litellm-router-gpt-5.5-test-mock-fallback4
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: fallback4
+      MOCK_UPSTREAM_STATE_FILE: /app/state/fallback4.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/failover-stats-test:/app/state
+    ports:
+      - "127.0.0.1:4214:8000"

@@ -30,12 +30,13 @@ ENV_PATH = ROOT / '.env'
 WATCHER_STATE_PATH = ROOT / 'scripts' / '.watch_openclaw_codex_profile_state.json'
 LITELLM_CONFIG_PATH = ROOT / 'litellm' / 'config.yaml'
 LITELLM_COMPOSE_PATH = ROOT / 'docker-compose.yml'
-LITELLM_HEALTH_URL = 'http://127.0.0.1:4002/health/liveliness'
+LITELLM_HEALTH_URL = os.environ.get('LITELLM_HEALTH_URL', 'http://192.168.199.102:4002/health/liveliness')
+FAILOVER_STATS_URL = os.environ.get('FAILOVER_STATS_URL', 'http://127.0.0.1:4129/failover-stats')
 DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 4010
 DOCKER_BIN = shutil.which('docker') or '/opt/homebrew/bin/docker'
 
-ENTRY_MODEL = 'gpt-5.4'
+ENTRY_MODEL = 'gpt-5.5'
 
 UI_HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -138,6 +139,26 @@ UI_HTML = """<!doctype html>
       line-height: 1.2;
       word-break: break-word;
     }
+    .failover-summary-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .failover-summary-row .chip {
+      padding: 12px 14px;
+    }
+    .failover-summary-row .chip .label {
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .failover-summary-row .chip .value {
+      font-size: 26px;
+      line-height: 1;
+    }
+    .chip.ok .value { color: var(--ok); }
+    .chip.warn .value { color: var(--warn); }
+    .chip.bad .value { color: var(--bad); }
     .hero-meta {
       display: flex;
       gap: 10px;
@@ -554,7 +575,7 @@ UI_HTML = """<!doctype html>
       flex-wrap: wrap;
     }
     @media (max-width: 900px) {
-      .status-row, .grid { grid-template-columns: 1fr; }
+      .status-row, .failover-summary-row, .grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -583,6 +604,28 @@ UI_HTML = """<!doctype html>
         <div class="chip">
           <span class="label">Fallback Chain</span>
           <span class="value" id="current-fallbacks">loading...</span>
+        </div>
+      </div>
+      <div class="failover-summary-row">
+        <div class="chip">
+          <span class="label">总请求</span>
+          <span class="value" id="failover-total-requests">-</span>
+        </div>
+        <div class="chip ok">
+          <span class="label">主链完成</span>
+          <span class="value" id="failover-primary-completions">-</span>
+        </div>
+        <div class="chip warn">
+          <span class="label">进入备用</span>
+          <span class="value" id="failover-backup-requests">-</span>
+        </div>
+        <div class="chip warn">
+          <span class="label">进入第二备用</span>
+          <span class="value" id="failover-depth2-or-more">-</span>
+        </div>
+        <div class="chip bad">
+          <span class="label">未恢复失败</span>
+          <span class="value" id="failover-unresolved-failures">-</span>
         </div>
       </div>
     </section>
@@ -615,7 +658,7 @@ UI_HTML = """<!doctype html>
         <div id="pool" class="pool"></div>
         <div class="note">
           当前约定：
-          <br>1. 只修改 <code>gpt-5.4</code> 这条逻辑链路。
+          <br>1. 只修改 <code>gpt-5.5</code> 这条逻辑链路。
           <br>2. 默认只控制是否参与当前调用顺序；仅当中转站处于 bypassed 时，才允许在编辑窗口中彻底删除。
           <br>3. 保存后由本地服务自动重启生产 LiteLLM 容器。
         </div>
@@ -689,6 +732,7 @@ UI_HTML = """<!doctype html>
       dragModelName: null,
       dragOverModelName: null,
       dragOverPosition: null,
+      failoverStats: null,
     };
 
     function setMessage(text, kind = '') {
@@ -729,6 +773,15 @@ UI_HTML = """<!doctype html>
       document.getElementById('binding-email').textContent = summary.envBoundEmail || summary.resolvedProfileEmail || '-';
       document.getElementById('current-main').textContent = active[0]?.model_name || '-';
       document.getElementById('current-fallbacks').textContent = active.slice(1).map(item => item.model_name).join(' → ') || 'none';
+    }
+
+    function renderFailoverSummary() {
+      const summary = state.failoverStats?.summary || {};
+      document.getElementById('failover-total-requests').textContent = summary.totalRequests ?? '-';
+      document.getElementById('failover-primary-completions').textContent = summary.primaryCompletions ?? '-';
+      document.getElementById('failover-backup-requests').textContent = summary.backupRequests ?? '-';
+      document.getElementById('failover-depth2-or-more').textContent = summary.depth2OrMore ?? '-';
+      document.getElementById('failover-unresolved-failures').textContent = summary.unresolvedFailures ?? '-';
     }
 
     function swap(arr, from, to) {
@@ -983,6 +1036,7 @@ UI_HTML = """<!doctype html>
 
     function rerender() {
       renderHeader();
+      renderFailoverSummary();
       renderActive();
       renderPool();
     }
@@ -1054,12 +1108,14 @@ UI_HTML = """<!doctype html>
 
     async function loadAll() {
       setMessage('正在读取当前状态...', '');
-      const [status, order] = await Promise.all([
+      const [status, order, failoverStats] = await Promise.all([
         fetchJson('/status'),
-        fetchJson('/router-config')
+        fetchJson('/router-config'),
+        fetchJson('/failover-stats?window=all').catch(() => null)
       ]);
       state.status = status;
       state.order = order;
+      state.failoverStats = failoverStats;
       setDirty(false);
       rerender();
       setMessage('已加载当前生产配置。', 'ok');
@@ -1067,11 +1123,13 @@ UI_HTML = """<!doctype html>
 
     async function refreshAfterImmediateModelChange(messageText) {
       const snapshot = createUnsavedSnapshot();
-      const [status, freshOrder] = await Promise.all([
+      const [status, freshOrder, failoverStats] = await Promise.all([
         fetchJson('/status'),
         fetchJson('/router-config'),
+        fetchJson('/failover-stats?window=all').catch(() => null),
       ]);
       state.status = status;
+      state.failoverStats = failoverStats;
       state.order = applyUnsavedSnapshot(freshOrder, snapshot);
       setDirty(snapshot.dirty);
       rerender();
@@ -1451,6 +1509,32 @@ def post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None 
         return {'ok': False, 'status': 0, 'error': str(exc)}
 
 
+def proxy_failover_stats(path: str) -> dict[str, Any]:
+    query = ''
+    if '?' in path:
+        query = path.split('?', 1)[1]
+    url = FAILOVER_STATS_URL
+    if query:
+        url = f'{url}?{query}'
+    result = fetch_json(url, timeout=5)
+    if result.get('ok') and isinstance(result.get('body'), dict):
+        return result.get('body')  # type: ignore[return-value]
+    return {
+        'ok': False,
+        'generatedAt': now_iso(),
+        'sourceUrl': url,
+        'error': result.get('error') or 'failover_stats_unavailable',
+        'status': result.get('status', 0),
+        'summary': {
+            'totalRequests': 0,
+            'primaryCompletions': 0,
+            'backupRequests': 0,
+            'depth2OrMore': 0,
+            'unresolvedFailures': 0,
+        },
+    }
+
+
 def trim_trailing_slash(url: str) -> str:
     return url.rstrip('/')
 
@@ -1498,7 +1582,7 @@ def test_upstream_connection(model_name: str, base_url: str, api_key: str) -> di
         }
 
     fallback_payload = {
-        'model': 'openai/gpt-5.4',
+        'model': 'openai/gpt-5.5',
         'messages': [
             {'role': 'user', 'content': 'ping'}
         ],
@@ -1909,7 +1993,7 @@ def add_new_model(model_name: str, base_url: str, api_key: str) -> dict[str, Any
     new_item = {
         'model_name': model_name,
         'litellm_params': {
-            'model': 'openai/gpt-5.4',
+            'model': 'openai/gpt-5.5',
             'api_base': f'os.environ/{env_prefix}_UPSTREAM_BASE_URL',
             'api_key': f'os.environ/{env_prefix}_UPSTREAM_API_KEY',
         },
@@ -2159,6 +2243,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == '/':
             self._send_html(UI_HTML)
+            return
+        if self.path.startswith('/failover-stats'):
+            self._send_json(proxy_failover_stats(self.path))
             return
         if self.path == '/status':
             self._send_json(build_status())

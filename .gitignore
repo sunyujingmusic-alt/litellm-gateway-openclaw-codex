@@ -1,4 +1,5 @@
 .env
+.env.*
 runtime/
 
 .env.codex-oauth-gmn.test
@@ -6,6 +7,14 @@ logs/
 tmp/
 .venv/
 __pycache__/
+*.pyc
+*.bak
+*.bak-*
+*.sqlite3
+*.jsonl
+docker-compose.yml.bak-*
+litellm/*.bak-*
+scripts/*.bak-*
 CHROME_PLUS_AUTO_FOLLOW_PROGRESS_2026-05-10.md
 scripts/.watch_openclaw_codex_profile_state.json
 node_modules/

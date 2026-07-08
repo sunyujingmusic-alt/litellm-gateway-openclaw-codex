@@ -1,7 +1,7 @@
 model_list:
-- model_name: gpt-5.4
+- model_name: gpt-5.5
   litellm_params:
-    model: openai/gpt-5.4
+    model: openai/gpt-5.5
     api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
     api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
     use_chat_completions_api: true
@@ -10,14 +10,9 @@ model_list:
     drop_params: true
     additional_drop_params:
     - metadata
-- model_name: gpt-5.4-ccodex
+- model_name: gpt-5.5-fastCode
   litellm_params:
-    model: openai/gpt-5.4
-    api_base: os.environ/CCODEX_UPSTREAM_BASE_URL
-    api_key: os.environ/CCODEX_UPSTREAM_API_KEY
-- model_name: gpt-5.4-fastCode
-  litellm_params:
-    model: openai/gpt-5.4
+    model: openai/gpt-5.5
     api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
     api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
     use_chat_completions_api: true
@@ -26,39 +21,34 @@ model_list:
     drop_params: true
     additional_drop_params:
     - metadata
-- model_name: gpt-5.4-popcorn
+- model_name: gpt-5.5-popcorn
   litellm_params:
-    model: openai/gpt-5.4
+    model: openai/gpt-5.5
     api_base: os.environ/POPCORN_UPSTREAM_BASE_URL
     api_key: os.environ/POPCORN_UPSTREAM_API_KEY
-- model_name: gpt-5.4-oauth
+- model_name: gpt-5.5-fsys
   litellm_params:
-    model: openai/gpt-5.4
-    api_base: os.environ/OAUTH_UPSTREAM_BASE_URL
-    api_key: os.environ/OAUTH_UPSTREAM_API_KEY
-    drop_params: true
-    additional_drop_params:
-    - metadata
-- model_name: gpt-5.4-gmn
-  litellm_params:
-    model: openai/gpt-5.4
-    api_base: os.environ/GMN_UPSTREAM_BASE_URL
-    api_key: os.environ/GMN_UPSTREAM_API_KEY
+    model: openai/gpt-5.5
+    api_base: os.environ/FSYS_UPSTREAM_BASE_URL
+    api_key: os.environ/FSYS_UPSTREAM_API_KEY
 router_settings:
   routing_strategy: simple-shuffle
-  num_retries: 0
-  timeout: 15
-  stream_timeout: 15
+  num_retries: 1
+  timeout: 60
+  stream_timeout: 60
   max_fallbacks: 4
   allowed_fails: 2
   cooldown_time: 300
   redis_url: os.environ/REDIS_URL
   fallbacks:
-  - gpt-5.4:
-    - gpt-5.4-popcorn
-    - gpt-5.4-gmn
+  - gpt-5.5:
+    - gpt-5.5-popcorn
+    - gpt-5.5-fsys
 general_settings:
   master_key: os.environ/GATEWAY_API_KEY
   drop_params: true
 litellm_settings:
   set_verbose: false
+  callbacks:
+  - prometheus
+  - failover_stats_callback.proxy_handler_instance

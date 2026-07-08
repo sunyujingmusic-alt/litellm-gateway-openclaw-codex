@@ -22,6 +22,9 @@ services:
       - redis
     environment:
       REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
       HTTP_PROXY: ""
       HTTPS_PROXY: ""
       NO_PROXY: ""
@@ -39,8 +42,37 @@ services:
       - "4000"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+      - ./scripts/failover_stats_callback.py:/app/failover_stats_callback.py:ro
+      - ./logs/failover-stats-prod:/app/failover-stats
     ports:
       - "127.0.0.1:4002:4000"
+      - "192.168.199.102:4002:4000"
+    networks:
+      - gateway
+
+  failover-stats-api:
+    image: python:3.13-alpine
+    container_name: litellm-router-prod-stats
+    restart: unless-stopped
+    depends_on:
+      - litellm
+    environment:
+      FAILOVER_STATS_HOST: 0.0.0.0
+      FAILOVER_STATS_PORT: "4129"
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      FAILOVER_STATS_PROMETHEUS_URL: http://litellm:4000/metrics/
+      FAILOVER_STATS_CHAIN: gpt-5.5,gpt-5.5-popcorn,gpt-5.5-fsys
+      FAILOVER_STATS_VUE_BUNDLE: /app/vendor/vue.global.prod.js
+    command:
+      - python
+      - /app/failover_stats_api.py
+    volumes:
+      - ./scripts/failover_stats_api.py:/app/failover_stats_api.py:ro
+      - ./logs/failover-stats-prod:/app/failover-stats
+      - ./node_modules/vue/dist:/app/vendor:ro
+    ports:
+      - "127.0.0.1:4129:4129"
     networks:
       - gateway
 
