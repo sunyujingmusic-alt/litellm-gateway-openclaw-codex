@@ -1,20 +1,20 @@
-name: litellm-gateway-gpt55-test
+name: litellm-gateway-structured-logging-mock-test
 
 services:
   redis-test:
     image: redis:7-alpine
-    container_name: litellm-router-gpt-5.5-test-redis
+    container_name: litellm-structured-test-redis
     restart: unless-stopped
     command:
       - redis-server
       - --appendonly
       - no
     ports:
-      - "127.0.0.1:6381:6379"
+      - "127.0.0.1:6382:6379"
 
   litellm-test:
     image: ghcr.io/berriai/litellm:main-stable
-    container_name: litellm-router-gpt-5.5-test
+    container_name: litellm-structured-test
     restart: unless-stopped
     depends_on:
       - redis-test
@@ -25,9 +25,13 @@ services:
       - mock-fallback4
     environment:
       TEST_REDIS_URL: redis://redis-test:6379
+      REDIS_URL: redis://redis-test:6379
       GATEWAY_API_KEY: local-litellm-gateway
+      PRIMARY_PROBE_ADMIN_KEY: local-primary-probe-admin
       FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
       FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      LITELLM_ASYNC_COOLDOWN_BRIDGE: "1"
+      LITELLM_ASYNC_COOLDOWN_SECONDS: "300"
       CCODEX_UPSTREAM_BASE_URL: http://mock-primary:8000/v1
       CCODEX_UPSTREAM_API_KEY: sk-mock-primary
       CLAUDECODER_UPSTREAM_BASE_URL: http://mock-fallback1:8000/v1
@@ -46,6 +50,9 @@ services:
       https_proxy: ""
       no_proxy: ""
       all_proxy: ""
+    entrypoint:
+      - python
+      - /app/primary_probe_litellm_entrypoint.py
     command:
       - --config
       - /app/config.yaml
@@ -54,15 +61,16 @@ services:
       - --port
       - "4000"
     volumes:
-      - ./litellm/config.gpt-5.5-router-test.yaml:/app/config.yaml:ro
+      - ./litellm/config.gpt-5.4-router-test.yaml:/app/config.yaml:ro
       - ./scripts/failover_stats_callback.py:/app/failover_stats_callback.py:ro
+      - ./scripts/primary_probe_litellm_entrypoint.py:/app/primary_probe_litellm_entrypoint.py:ro
       - ./logs/failover-stats:/app/failover-stats
     ports:
-      - "127.0.0.1:4028:4000"
+      - "127.0.0.1:4042:4000"
 
   failover-stats-api:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-stats
+    container_name: litellm-structured-test-stats
     restart: unless-stopped
     depends_on:
       - litellm-test
@@ -72,7 +80,8 @@ services:
       FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
       FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
       FAILOVER_STATS_PROMETHEUS_URL: http://litellm-test:4000/metrics/
-      FAILOVER_STATS_CHAIN: gpt-5.5-router-test,gpt-5.5-router-test-claudecoder,gpt-5.5-router-test-popcorn,gpt-5.5-router-test-oauth,gpt-5.5-router-test-gmn
+      FAILOVER_STATS_CHAIN: gpt-5.4-router-test,gpt-5.4-router-test-claudecoder,gpt-5.4-router-test-popcorn,gpt-5.4-router-test-oauth,gpt-5.4-router-test-gmn
+      FAILOVER_STATS_CHAINS: "Test gpt-5.4:gpt-5.4-router-test,gpt-5.4-router-test-claudecoder,gpt-5.4-router-test-popcorn,gpt-5.4-router-test-oauth,gpt-5.4-router-test-gmn;Test gpt-5.5:gpt-5.5-router-test,gpt-5.5-router-test-claudecoder,gpt-5.5-router-test-popcorn,gpt-5.5-router-test-oauth,gpt-5.5-router-test-gmn"
       FAILOVER_STATS_VUE_BUNDLE: /app/vendor/vue.global.prod.js
       FAILOVER_STATS_SUBTITLE: 测试链路聚合看板，只读取 /failover-stats 的脱敏数据。
       FAILOVER_STATS_ALLOW_RESET: "1"
@@ -84,11 +93,11 @@ services:
       - ./logs/failover-stats:/app/failover-stats
       - ./node_modules/vue/dist:/app/vendor:ro
     ports:
-      - "127.0.0.1:4128:4129"
+      - "127.0.0.1:4149:4129"
 
   failover-stats-proxy:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-stats-proxy
+    container_name: litellm-structured-test-stats-proxy
     restart: unless-stopped
     depends_on:
       - litellm-test
@@ -105,11 +114,71 @@ services:
       - ./scripts/failover_stats_proxy.py:/app/failover_stats_proxy.py:ro
       - ./logs/failover-stats:/app/failover-stats
     ports:
-      - "127.0.0.1:4138:4130"
+      - "127.0.0.1:4150:4130"
+
+  primary-probe-test:
+    image: python:3.13-alpine
+    container_name: litellm-structured-test-probe
+    restart: unless-stopped
+    depends_on:
+      - redis-test
+      - litellm-test
+      - mock-primary
+    environment:
+      REDIS_URL: redis://redis-test:6379
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      PROBE_DEPLOYMENT_ID: gpt-5.4-router-test
+      PROBE_BASE_URL: http://mock-primary:8000/v1
+      PROBE_API_KEY: sk-mock-primary
+      PROBE_MODEL: openai/gpt-5.4
+      PROBE_INTERVAL_SECONDS: "1"
+      PROBE_SUCCESS_THRESHOLD: "2"
+      PROBE_TIMEOUT_SECONDS: "2"
+      PROBE_STATUS_KEY: gateway:health:gpt-5.4-router-test
+      PROBE_RECOVERY_URL: http://litellm-test:4000/internal/router/cooldown/{deployment_id}
+      PROBE_RECOVERY_METHOD: DELETE
+      PROBE_RECOVERY_API_KEY: local-primary-probe-admin
+    command:
+      - python
+      - /app/upstream_health_probe.py
+    volumes:
+      - ./scripts/upstream_health_probe.py:/app/upstream_health_probe.py:ro
+      - ./logs/failover-stats:/app/failover-stats
+
+  primary-probe-test-gpt55:
+    image: python:3.13-alpine
+    container_name: litellm-structured-test-probe-gpt55
+    restart: unless-stopped
+    depends_on:
+      - redis-test
+      - litellm-test
+      - mock-primary
+    environment:
+      REDIS_URL: redis://redis-test:6379
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      PROBE_DEPLOYMENT_ID: gpt-5.5-router-test
+      PROBE_BASE_URL: http://mock-primary:8000/v1
+      PROBE_API_KEY: sk-mock-primary
+      PROBE_MODEL: openai/gpt-5.5
+      PROBE_INTERVAL_SECONDS: "1"
+      PROBE_SUCCESS_THRESHOLD: "2"
+      PROBE_TIMEOUT_SECONDS: "2"
+      PROBE_STATUS_KEY: gateway:health:gpt-5.5-router-test
+      PROBE_RECOVERY_URL: http://litellm-test:4000/internal/router/cooldown/{deployment_id}
+      PROBE_RECOVERY_METHOD: DELETE
+      PROBE_RECOVERY_API_KEY: local-primary-probe-admin
+    command:
+      - python
+      - /app/upstream_health_probe.py
+    volumes:
+      - ./scripts/upstream_health_probe.py:/app/upstream_health_probe.py:ro
+      - ./logs/failover-stats:/app/failover-stats
 
   mock-primary:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-mock-primary
+    container_name: litellm-structured-test-mock-primary
     restart: unless-stopped
     environment:
       MOCK_UPSTREAM_NAME: primary
@@ -121,11 +190,11 @@ services:
       - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
       - ./runtime/failover-stats-test:/app/state
     ports:
-      - "127.0.0.1:4210:8000"
+      - "127.0.0.1:4222:8000"
 
   mock-fallback1:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-mock-fallback1
+    container_name: litellm-structured-test-mock-fallback1
     restart: unless-stopped
     environment:
       MOCK_UPSTREAM_NAME: fallback1
@@ -137,11 +206,11 @@ services:
       - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
       - ./runtime/failover-stats-test:/app/state
     ports:
-      - "127.0.0.1:4211:8000"
+      - "127.0.0.1:4223:8000"
 
   mock-fallback2:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-mock-fallback2
+    container_name: litellm-structured-test-mock-fallback2
     restart: unless-stopped
     environment:
       MOCK_UPSTREAM_NAME: fallback2
@@ -153,11 +222,11 @@ services:
       - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
       - ./runtime/failover-stats-test:/app/state
     ports:
-      - "127.0.0.1:4212:8000"
+      - "127.0.0.1:4224:8000"
 
   mock-fallback3:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-mock-fallback3
+    container_name: litellm-structured-test-mock-fallback3
     restart: unless-stopped
     environment:
       MOCK_UPSTREAM_NAME: fallback3
@@ -169,11 +238,11 @@ services:
       - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
       - ./runtime/failover-stats-test:/app/state
     ports:
-      - "127.0.0.1:4213:8000"
+      - "127.0.0.1:4225:8000"
 
   mock-fallback4:
     image: python:3.13-alpine
-    container_name: litellm-router-gpt-5.5-test-mock-fallback4
+    container_name: litellm-structured-test-mock-fallback4
     restart: unless-stopped
     environment:
       MOCK_UPSTREAM_NAME: fallback4
@@ -185,4 +254,4 @@ services:
       - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
       - ./runtime/failover-stats-test:/app/state
     ports:
-      - "127.0.0.1:4214:8000"
+      - "127.0.0.1:4226:8000"

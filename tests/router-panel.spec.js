@@ -7,11 +7,11 @@ const envPath = `${rootDir}/.env`;
 const configPath = `${rootDir}/litellm/config.yaml`;
 const testModelName = 'gpt-5.4-ui-test';
 const testModelBaseUrl = 'https://ui-test.example.com/v1';
-const testModelApiKey = 'sk-ui-test-1234567890';
+const testModelApiKey = 'ui-test-api-key-placeholder';
 const editedBaseUrl = 'https://edited.example.com/v1';
-const editedApiKey = 'sk-edit-test-1234567890';
+const editedApiKey = 'edit-test-api-key-placeholder';
 const probeBaseUrl = 'https://probe.example.com/v1';
-const probeApiKey = 'sk-probe-test-1234567890';
+const probeApiKey = 'probe-test-api-key-placeholder';
 
 async function getRouterConfig(request) {
   const response = await request.get('/router-config');
@@ -50,7 +50,7 @@ test.describe('LiteLLM Router Panel', () => {
       expect(initial.models.some((model) => model.model_name === 'gpt-5.4-ccodex' && !model.enabled)).toBeTruthy();
 
       await page.goto('/');
-      await expect(page.getByRole('heading', { name: 'LiteLLM Router Panel' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'OpenClaw gpt-5.4 Router Panel' })).toBeVisible();
       await expect(page.locator('#save-btn')).toBeVisible();
 
       const activeStack = page.locator('#active-stack');

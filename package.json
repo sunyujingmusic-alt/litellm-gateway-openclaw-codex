@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:e2e": "playwright test tests/router-panel.spec.js --reporter=line",
-    "test:failover-stats": "playwright test tests/failover-stats.spec.js --reporter=line"
+    "test:e2e": "node ./node_modules/@playwright/test/cli.js test tests/router-panel.spec.js --reporter=line",
+    "test:failover-stats": "node ./node_modules/@playwright/test/cli.js test tests/failover-stats.spec.js --reporter=line"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0"

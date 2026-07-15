@@ -10,6 +10,7 @@ import sys
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,42 +27,130 @@ if str(SCRIPT_DIR) not in sys.path:
 import sync_codex_oauth_test_env as sync  # noqa: E402
 import query_openclaw_codex_quota as quota_mod  # noqa: E402
 
-ENV_PATH = ROOT / '.env'
+def env_path(name: str, default: Path) -> Path:
+    return Path(os.environ.get(name, str(default))).expanduser()
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+ENV_PATH = env_path('LITELLM_ENV_PATH', ROOT / '.env')
 WATCHER_STATE_PATH = ROOT / 'scripts' / '.watch_openclaw_codex_profile_state.json'
-LITELLM_CONFIG_PATH = ROOT / 'litellm' / 'config.yaml'
-LITELLM_COMPOSE_PATH = ROOT / 'docker-compose.yml'
+LITELLM_CONFIG_PATH = env_path('LITELLM_CONFIG_PATH', ROOT / 'litellm' / 'config.yaml')
+LITELLM_COMPOSE_PATH = env_path('LITELLM_COMPOSE_PATH', ROOT / 'docker-compose.yml')
 LITELLM_HEALTH_URL = os.environ.get('LITELLM_HEALTH_URL', 'http://192.168.199.102:4002/health/liveliness')
 FAILOVER_STATS_URL = os.environ.get('FAILOVER_STATS_URL', 'http://127.0.0.1:4129/failover-stats')
+REDIS_CONTAINER = os.environ.get('LITELLM_REDIS_CONTAINER', 'litellm-router-redis')
+LITELLM_RESTART_CONTAINER = os.environ.get('LITELLM_RESTART_CONTAINER', 'litellm-router-prod')
 DEFAULT_HOST = '0.0.0.0'
-DEFAULT_PORT = 4010
+DEFAULT_PORT = env_int('LITELLM_PANEL_PORT', 4010)
 DOCKER_BIN = shutil.which('docker') or '/opt/homebrew/bin/docker'
 
-ENTRY_MODEL = 'gpt-5.5'
+DEFAULT_PRODUCTION_CHAINS = [
+    {
+        'id': 'gpt-5.5',
+        'label': 'OpenClaw gpt-5.5',
+        'owner': 'OpenClaw',
+        'entryModel': 'gpt-5.5',
+        'statusKey': 'gateway:health:gpt-5.5',
+        'cooldownKey': 'deployment:gpt-5.5:cooldown',
+    },
+    {
+        'id': 'gpt-5.4',
+        'label': 'OpenClaw gpt-5.4',
+        'owner': 'OpenClaw',
+        'entryModel': 'gpt-5.4',
+        'statusKey': 'gateway:health:gpt-5.4',
+        'cooldownKey': 'deployment:gpt-5.4:cooldown',
+    },
+]
+
+
+def normalize_chain_config(item: dict[str, Any]) -> dict[str, str] | None:
+    entry_model = str(item.get('entryModel') or item.get('id') or '').strip()
+    if not entry_model:
+        return None
+    chain_id = str(item.get('id') or entry_model).strip()
+    return {
+        'id': chain_id,
+        'label': str(item.get('label') or entry_model).strip(),
+        'owner': str(item.get('owner') or 'Gateway').strip(),
+        'entryModel': entry_model,
+        'statusKey': str(item.get('statusKey') or f'gateway:health:{entry_model}').strip(),
+        'cooldownKey': str(item.get('cooldownKey') or f'deployment:{entry_model}:cooldown').strip(),
+    }
+
+
+def load_production_chains() -> list[dict[str, str]]:
+    raw = os.environ.get('LITELLM_PANEL_CHAINS', '').strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:
+            print(f'warning: invalid LITELLM_PANEL_CHAINS: {exc}', file=sys.stderr)
+        else:
+            if isinstance(parsed, list):
+                chains = [
+                    chain
+                    for item in parsed
+                    if isinstance(item, dict)
+                    for chain in [normalize_chain_config(item)]
+                    if chain
+                ]
+                if chains:
+                    return chains
+    return [
+        chain
+        for item in DEFAULT_PRODUCTION_CHAINS
+        for chain in [normalize_chain_config(item)]
+        if chain
+    ]
+
+
+def choose_default_entry_model(chains: list[dict[str, str]]) -> str:
+    requested = os.environ.get('LITELLM_DEFAULT_ENTRY_MODEL', '').strip()
+    if requested:
+        return requested
+    for chain in chains:
+        if str(chain.get('entryModel') or '').strip() == 'gpt-5.4':
+            return 'gpt-5.4'
+    return str((chains[0] if chains else {}).get('entryModel') or 'gpt-5.4')
+
+
+PRODUCTION_CHAINS = load_production_chains()
+DEFAULT_ENTRY_MODEL = choose_default_entry_model(PRODUCTION_CHAINS)
+ENTRY_MODEL = DEFAULT_ENTRY_MODEL
+
+EDITABLE_ENTRY_MODELS = tuple(str(chain.get('entryModel') or '') for chain in PRODUCTION_CHAINS)
 
 UI_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LiteLLM Router Panel</title>
+  <title>LiteLLM Gateway WebUI</title>
   <style>
     :root {
-      --bg: #f4efe6;
-      --paper: #fffaf2;
-      --ink: #1f2d2a;
-      --muted: #6f7b74;
-      --line: #d7c9ad;
+      --bg: #eef2f6;
+      --paper: #ffffff;
+      --ink: #18212f;
+      --muted: #5f6b7a;
+      --line: #d7dee8;
       --accent: #0f766e;
-      --accent-2: #c56b2c;
-      --accent-3: #0b3b39;
-      --ok: #2f855a;
-      --warn: #b45309;
+      --accent-2: #2563eb;
+      --accent-3: #0f172a;
+      --ok: #16794f;
+      --warn: #a35d00;
       --bad: #b42318;
       --pending: #7c5d12;
       --info: #1d4ed8;
-      --shadow: 0 18px 40px rgba(61, 49, 33, 0.12);
-      --shadow-soft: 0 8px 24px rgba(61, 49, 33, 0.08);
-      --radius: 20px;
+      --shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+      --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.06);
+      --radius: 12px;
       --mono: "SFMono-Regular", "Menlo", "Monaco", monospace;
       --sans: "Avenir Next", "PingFang SC", "Noto Sans SC", sans-serif;
     }
@@ -70,40 +159,28 @@ UI_HTML = """<!doctype html>
       margin: 0;
       font-family: var(--sans);
       color: var(--ink);
-      background:
-        radial-gradient(circle at top right, rgba(15,118,110,0.18), transparent 32%),
-        radial-gradient(circle at left 10%, rgba(197,107,44,0.12), transparent 26%),
-        linear-gradient(180deg, #f7f0e2 0%, var(--bg) 100%);
+      background: var(--bg);
       min-height: 100vh;
     }
     .shell {
-      width: min(1120px, calc(100vw - 32px));
+      width: min(1480px, calc(100vw - 32px));
       margin: 24px auto 48px;
     }
     .hero {
-      background: linear-gradient(135deg, rgba(255,250,242,0.97), rgba(251,243,227,0.92));
-      border: 1px solid rgba(176, 146, 94, 0.28);
+      background: var(--paper);
+      border: 1px solid var(--line);
       border-radius: calc(var(--radius) + 6px);
       box-shadow: var(--shadow);
       padding: 28px;
       position: relative;
       overflow: hidden;
     }
-    .hero:before {
-      content: "";
-      position: absolute;
-      inset: auto -40px -90px auto;
-      width: 220px;
-      height: 220px;
-      border-radius: 50%;
-      background: rgba(15,118,110,0.08);
-      filter: blur(8px);
-    }
+    .hero:before { display: none; }
     h1 {
       margin: 0 0 8px;
       font-size: clamp(28px, 4vw, 44px);
       line-height: 1.02;
-      letter-spacing: -0.04em;
+      letter-spacing: 0;
     }
     .sub {
       margin: 0;
@@ -120,10 +197,9 @@ UI_HTML = """<!doctype html>
     }
     .chip {
       border: 1px solid var(--line);
-      border-radius: 18px;
-      background: rgba(255,255,255,0.7);
+      border-radius: 10px;
+      background: #fff;
       padding: 14px 16px;
-      backdrop-filter: blur(6px);
     }
     .chip .label {
       display: block;
@@ -143,6 +219,10 @@ UI_HTML = """<!doctype html>
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 10px;
+    }
+    .failover-summary-stack {
+      display: grid;
+      gap: 10px;
       margin-top: 14px;
     }
     .failover-summary-row .chip {
@@ -156,6 +236,47 @@ UI_HTML = """<!doctype html>
       font-size: 26px;
       line-height: 1;
     }
+    .failover-tools {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 16px;
+    }
+    .failover-range {
+      display: inline-flex;
+      gap: 6px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+    }
+    .range-btn, .failover-reset-btn {
+      border: 0;
+      border-radius: 999px;
+      cursor: pointer;
+      padding: 8px 12px;
+      font-family: inherit;
+      font-weight: 800;
+      font-size: 13px;
+      transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
+    }
+    .range-btn {
+      background: transparent;
+      color: var(--muted);
+    }
+    .range-btn.is-active {
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 6px 16px rgba(15,118,110,0.18);
+    }
+    .failover-reset-btn {
+      background: rgba(180,83,9,0.11);
+      color: var(--warn);
+    }
+    .range-btn:hover, .failover-reset-btn:hover { transform: translateY(-1px); }
+    .range-btn:disabled, .failover-reset-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
     .chip.ok .value { color: var(--ok); }
     .chip.warn .value { color: var(--warn); }
     .chip.bad .value { color: var(--bad); }
@@ -171,8 +292,8 @@ UI_HTML = """<!doctype html>
       gap: 8px;
       padding: 10px 12px;
       border-radius: 999px;
-      background: rgba(255,255,255,0.72);
-      border: 1px solid rgba(176, 146, 94, 0.26);
+      background: #f8fafc;
+      border: 1px solid var(--line);
       font-size: 13px;
       color: var(--muted);
     }
@@ -187,12 +308,42 @@ UI_HTML = """<!doctype html>
       margin-top: 18px;
       align-items: start;
     }
+    .chain-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 18px;
+      align-items: start;
+    }
+    .chain-column {
+      display: grid;
+      gap: 18px;
+      min-width: 0;
+    }
     .panel {
-      background: rgba(255,250,242,0.95);
-      border: 1px solid rgba(176, 146, 94, 0.28);
+      background: var(--paper);
+      border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       padding: 20px;
+      min-width: 0;
+    }
+    .panel-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .panel-title-row h2 {
+      margin-bottom: 4px;
+    }
+    .chain-kicker {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: var(--mono);
+      line-height: 1.3;
     }
     .panel h2 {
       margin: 0 0 10px;
@@ -211,8 +362,8 @@ UI_HTML = """<!doctype html>
     }
     .card {
       border: 1px solid var(--line);
-      border-radius: 18px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.84), rgba(255,246,231,0.86));
+      border-radius: 10px;
+      background: #fff;
       padding: 14px;
       display: grid;
       gap: 12px;
@@ -226,7 +377,7 @@ UI_HTML = """<!doctype html>
     }
     .card.is-main {
       border-color: rgba(15,118,110,0.45);
-      background: linear-gradient(180deg, rgba(240,251,248,0.92), rgba(255,246,231,0.86));
+      background: #f4fbf8;
     }
     .card.is-pending {
       outline: 2px dashed rgba(197,107,44,0.35);
@@ -259,6 +410,9 @@ UI_HTML = """<!doctype html>
       gap: 12px;
       align-items: flex-start;
     }
+    .card-info {
+      min-width: 0;
+    }
     .slot {
       display: inline-flex;
       align-items: center;
@@ -287,6 +441,71 @@ UI_HTML = """<!doctype html>
       font-size: 13px;
       color: var(--muted);
       font-family: var(--mono);
+      word-break: break-word;
+    }
+    .route-light {
+      position: relative;
+      gap: 7px;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+    }
+    .route-light::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: rgba(111,123,116,0.45);
+      box-shadow: none;
+    }
+    .route-light.is-live {
+      background: rgba(47,133,90,0.16);
+      border-color: rgba(47,133,90,0.38);
+      color: var(--ok);
+      box-shadow: 0 0 0 3px rgba(47,133,90,0.08), 0 0 18px rgba(47,133,90,0.22);
+    }
+    .route-light.is-live::before {
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(47,133,90,0.14), 0 0 12px rgba(47,133,90,0.72);
+    }
+    .station-stats {
+      width: min(210px, 32%);
+      min-width: 170px;
+      align-self: flex-end;
+      border: 1px solid rgba(176, 146, 94, 0.22);
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .station-stats .stat-label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .station-stats .stat-main {
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 860;
+      color: var(--accent-3);
+    }
+    .station-stat-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .station-stat-line strong {
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .card-bottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 14px;
     }
     .controls {
       display: flex;
@@ -317,7 +536,7 @@ UI_HTML = """<!doctype html>
     .drag-handle:active {
       cursor: grabbing;
     }
-    .controls button, .toolbar button {
+    .controls button, .toolbar button, .panel-actions button, .pending-actions button {
       border: 0;
       border-radius: 999px;
       cursor: pointer;
@@ -327,8 +546,8 @@ UI_HTML = """<!doctype html>
       font-size: 14px;
       transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
     }
-    .controls button:hover, .toolbar button:hover { transform: translateY(-1px); }
-    .controls button:disabled, .toolbar button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    .controls button:hover, .toolbar button:hover, .panel-actions button:hover, .pending-actions button:hover { transform: translateY(-1px); }
+    .controls button:disabled, .toolbar button:disabled, .panel-actions button:disabled, .pending-actions button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     .btn-main { background: var(--accent); color: white; }
     .btn-soft { background: rgba(15,118,110,0.12); color: var(--accent); }
     .btn-ghost { background: rgba(31,45,42,0.08); color: var(--ink); }
@@ -361,11 +580,11 @@ UI_HTML = """<!doctype html>
     }
     .pool-item {
       border: 1px dashed var(--line);
-      border-radius: 16px;
+      border-radius: 10px;
       padding: 12px 14px;
       display: grid;
       gap: 6px;
-      background: rgba(255,255,255,0.58);
+      background: #fff;
       transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
     }
     .pool-item:hover {
@@ -374,7 +593,7 @@ UI_HTML = """<!doctype html>
     }
     .pool-item.disabled {
       opacity: 0.78;
-      background: rgba(239, 231, 214, 0.7);
+      background: #f1f5f9;
     }
     .pool-title {
       display: flex;
@@ -418,8 +637,8 @@ UI_HTML = """<!doctype html>
       width: 18px;
       height: 18px;
       border-radius: 50%;
-      border: 1px solid rgba(176,146,94,0.35);
-      background: rgba(255,255,255,0.82);
+      border: 1px solid var(--line);
+      background: #fff;
       color: var(--accent-3);
       font-size: 11px;
       font-weight: 800;
@@ -477,8 +696,8 @@ UI_HTML = """<!doctype html>
       margin-top: 16px;
       padding: 12px 14px;
       border-radius: 16px;
-      background: rgba(197,107,44,0.1);
-      border: 1px solid rgba(197,107,44,0.22);
+      background: rgba(163,93,0,0.1);
+      border: 1px solid rgba(163,93,0,0.22);
       color: var(--pending);
       font-size: 14px;
       font-weight: 700;
@@ -501,7 +720,7 @@ UI_HTML = """<!doctype html>
     }
     .note {
       margin-top: 16px;
-      border-top: 1px solid rgba(176, 146, 94, 0.28);
+      border-top: 1px solid var(--line);
       padding-top: 14px;
       color: var(--muted);
       font-size: 13px;
@@ -520,9 +739,9 @@ UI_HTML = """<!doctype html>
     .overlay.open { display: flex; }
     .modal {
       width: min(680px, 100%);
-      background: rgba(255, 249, 239, 0.98);
-      border: 1px solid rgba(176, 146, 94, 0.3);
-      border-radius: 24px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
       box-shadow: 0 28px 60px rgba(22, 24, 23, 0.26);
       padding: 22px;
     }
@@ -574,23 +793,195 @@ UI_HTML = """<!doctype html>
       justify-content: flex-end;
       flex-wrap: wrap;
     }
+    .runtime-alerts {
+      display: grid;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .runtime-alert {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      padding: 12px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .runtime-alert strong {
+      color: var(--ink);
+      display: block;
+      margin-bottom: 3px;
+    }
+    .runtime-alert.is-warn {
+      background: #fff7ed;
+      border-color: #fed7aa;
+      color: #9a3412;
+    }
+    .runtime-alert.is-bad {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #991b1b;
+    }
+    .runtime-board {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .runtime-chain {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .runtime-chain.is-cooldown,
+    .runtime-chain.is-unhealthy {
+      border-color: #fecaca;
+      background: #fffafa;
+    }
+    .runtime-chain.is-recovering {
+      border-color: #fed7aa;
+      background: #fffbf5;
+    }
+    .runtime-chain-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .runtime-title {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .runtime-title strong {
+      font-size: 16px;
+      line-height: 1.2;
+    }
+    .runtime-title span {
+      color: var(--muted);
+      font-size: 12px;
+      font-family: var(--mono);
+      word-break: break-word;
+    }
+    .state-badge {
+      border-radius: 999px;
+      padding: 6px 9px;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+      background: #e2e8f0;
+      color: #334155;
+      text-transform: uppercase;
+    }
+    .state-badge.is-ok {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .state-badge.is-warn {
+      background: #ffedd5;
+      color: #9a3412;
+    }
+    .state-badge.is-bad {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .runtime-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .runtime-metric {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 9px 10px;
+      min-width: 0;
+    }
+    .runtime-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      margin-bottom: 5px;
+    }
+    .runtime-metric strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+    .runtime-detail {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-word;
+      max-height: 3.2em;
+      overflow: hidden;
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-top: 18px;
+      margin-bottom: 10px;
+    }
+    .section-head h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+    .section-head p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .last-updated {
+      align-self: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 10px;
+      color: var(--muted);
+      background: #fff;
+      font-size: 12px;
+      white-space: nowrap;
+    }
     @media (max-width: 900px) {
-      .status-row, .failover-summary-row, .grid { grid-template-columns: 1fr; }
+      .status-row, .failover-summary-row, .runtime-board, .runtime-metrics, .grid, .chain-grid { grid-template-columns: 1fr; }
+      .failover-tools { align-items: stretch; flex-direction: column; }
+      .failover-range { width: 100%; }
+      .range-btn { flex: 1; }
+      .card-head { flex-direction: column; }
+      .card-bottom { flex-direction: column; align-items: stretch; }
+      .station-stats { width: 100%; min-width: 0; }
+      .section-head { flex-direction: column; }
+      .last-updated { align-self: flex-start; }
+      .panel-title-row { flex-direction: column; }
     }
   </style>
 </head>
 <body>
   <main class="shell">
     <section class="hero">
-      <h1>LiteLLM Router Panel</h1>
-      <p class="sub">显示当前生产 LiteLLM 的主模型与备用模型顺序，并允许你直接调整。保存后会写回 <code>litellm/config.yaml</code>，然后重启 <code>litellm-router-prod</code>。</p>
+      <h1>LiteLLM Gateway WebUI</h1>
+      <p class="sub">网关状态、独立请求链路的 cooldown / probe，以及各模型族独立的路由顺序编辑都在这里。</p>
       <div class="hero-meta">
-        <div class="pill"><strong>操作方式</strong> 先调整状态和顺序, 再统一保存</div>
-        <div class="pill"><strong>安全边界</strong> 不删除已有参数定义, 只改当前路由和模型配置</div>
+        <div class="pill"><strong>操作范围</strong> 按模型族独立保存</div>
+        <div class="pill"><strong>保存动作</strong> 写回配置并重启 LiteLLM</div>
+        <div class="pill"><strong>运行告警</strong> <span id="runtime-summary-pill">loading...</span></div>
       </div>
       <div class="status-row">
         <div class="chip">
-          <span class="label">Gateway</span>
+          <span class="label">LiteLLM Process</span>
           <span class="value" id="gateway-health">loading...</span>
         </div>
         <div class="chip">
@@ -598,72 +989,36 @@ UI_HTML = """<!doctype html>
           <span class="value" id="binding-email">loading...</span>
         </div>
         <div class="chip">
-          <span class="label">Current Main</span>
+          <span class="label">Active Primaries</span>
           <span class="value" id="current-main">loading...</span>
         </div>
         <div class="chip">
-          <span class="label">Fallback Chain</span>
+          <span class="label" id="current-fallbacks-label">Active Fallbacks</span>
           <span class="value" id="current-fallbacks">loading...</span>
         </div>
       </div>
-      <div class="failover-summary-row">
-        <div class="chip">
-          <span class="label">总请求</span>
-          <span class="value" id="failover-total-requests">-</span>
+      <div class="runtime-alerts" id="runtime-alerts"></div>
+      <div class="failover-tools">
+        <div class="failover-range" aria-label="故障转移统计范围">
+          <button type="button" class="range-btn is-active" data-failover-window="today" data-tooltip="查看今天 0 点以来的故障转移统计。">今日</button>
+          <button type="button" class="range-btn" data-failover-window="3d" data-tooltip="查看最近 3 天内的故障转移统计。">3 天内</button>
+          <button type="button" class="range-btn" data-failover-window="7d" data-tooltip="查看最近 7 天内的故障转移统计。">7 天内</button>
         </div>
-        <div class="chip ok">
-          <span class="label">主链完成</span>
-          <span class="value" id="failover-primary-completions">-</span>
-        </div>
-        <div class="chip warn">
-          <span class="label">进入备用</span>
-          <span class="value" id="failover-backup-requests">-</span>
-        </div>
-        <div class="chip warn">
-          <span class="label">进入第二备用</span>
-          <span class="value" id="failover-depth2-or-more">-</span>
-        </div>
-        <div class="chip bad">
-          <span class="label">未恢复失败</span>
-          <span class="value" id="failover-unresolved-failures">-</span>
-        </div>
+        <button type="button" class="failover-reset-btn" id="failover-reset-btn" data-tooltip="把当前统计显示从此刻重新计数。原始 SQLite 和 JSONL 日志会保留。">清除统计</button>
       </div>
+      <div class="failover-summary-stack" id="failover-summary-stack"></div>
     </section>
-    <section class="grid">
-      <div class="panel">
-        <h2>Active Order</h2>
-        <p class="meta">顶部卡片代表当前会被实际调用的顺序。第一张卡片是主模型，后续依次是备用模型。你可以把任意已定义的模型提升为主模型，也可以完全 bypass 某个模型但不删参数。<span class="helper" tabindex="0" data-tooltip="这里的变更先保存在页面状态里，不会立刻写入生产配置。只有点击“保存并重启 LiteLLM”后，才会更新 config.yaml 并重启容器。">?</span></p>
-        <div id="active-stack" class="stack"></div>
-        <div class="toolbar">
-          <button class="btn-main" id="save-btn" data-tooltip="把当前页面里的顺序、active/bypassed 状态写回配置文件，并自动重启生产 LiteLLM 容器。">保存并重启 LiteLLM</button>
-          <button class="btn-ghost" id="reload-btn" data-tooltip="放弃页面里尚未保存的改动，重新从当前生产配置读取状态。">重新读取当前配置</button>
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>Gateway Chains</h2>
+          <p>双链路只读总览，展示当前 probe、cooldown 和统计范围内的请求分布。</p>
         </div>
-        <div class="save-hint">拖动顺序前请先决定哪些模型要处于 active 状态。bypassed 模型不会进入当前调用链。</div>
-        <div id="pending-bar" class="pending-bar">
-          <span id="pending-text">当前有未保存的改动</span>
-          <div class="pending-actions">
-            <button class="btn-main" id="pending-save-btn" data-tooltip="立即保存当前所有未保存的排序和状态改动。">立即保存</button>
-            <button class="btn-ghost" id="pending-reload-btn" data-tooltip="放弃所有未保存的改动，恢复为服务当前读取到的配置状态。">放弃改动</button>
-          </div>
-        </div>
-        <div id="message" class="msg"></div>
+        <div class="last-updated" id="runtime-last-updated">loading...</div>
       </div>
-      <aside class="panel">
-        <h2>Model Pool</h2>
-        <p class="meta">这里列出生产配置里已经定义的所有上游别名。可以先在这里切换 active / bypassed，再决定是否把它设为主模型，或加入备用队列。<span class="helper" tabindex="0" data-tooltip="active 表示该模型会进入当前调用链；bypassed 表示已保留参数，但当前不会被路由命中。切换状态后仍需点击保存。">?</span></p>
-        <div class="panel-actions">
-          <button class="btn-main" id="add-model-btn" data-tooltip="创建一个新的中转站模型，填写名称、请求地址和 API key。创建完成后会自动写入配置并重启 LiteLLM。">添加新模型</button>
-          <span class="tag" data-tooltip="这里的 active / bypassed 切换只改变页面中的待保存状态。真正生效仍然依赖上方的保存按钮。">active / bypassed 可先切换, 再统一保存</span>
-        </div>
-        <div id="pool" class="pool"></div>
-        <div class="note">
-          当前约定：
-          <br>1. 只修改 <code>gpt-5.5</code> 这条逻辑链路。
-          <br>2. 默认只控制是否参与当前调用顺序；仅当中转站处于 bypassed 时，才允许在编辑窗口中彻底删除。
-          <br>3. 保存后由本地服务自动重启生产 LiteLLM 容器。
-        </div>
-      </aside>
+      <div class="runtime-board" id="runtime-board"></div>
     </section>
+    <section class="chain-grid" id="chain-grid" aria-label="模型路由编辑"></section>
   </main>
   <div id="edit-overlay" class="overlay" aria-hidden="true">
     <div class="modal">
@@ -699,7 +1054,7 @@ UI_HTML = """<!doctype html>
   <div id="new-model-overlay" class="overlay" aria-hidden="true">
     <div class="modal">
       <div class="modal-head">
-        <h3>添加新模型</h3>
+        <h3 id="new-model-title">添加新模型</h3>
         <button class="btn-ghost" id="new-model-close-btn" data-tooltip="关闭当前新建窗口，不会创建模型。">关闭</button>
       </div>
       <div class="form-grid">
@@ -726,62 +1081,291 @@ UI_HTML = """<!doctype html>
   <script>
     const state = {
       status: null,
-      order: null,
+      chains: [],
       editingModel: null,
-      dirty: false,
-      dragModelName: null,
-      dragOverModelName: null,
-      dragOverPosition: null,
+      newModelEntryModel: null,
+      dirtyByEntryModel: {},
+      drag: null,
       failoverStats: null,
+      failoverWindow: 'today',
+      focusedEntryModel: 'gpt-5.4',
     };
 
-    function setMessage(text, kind = '') {
-      const node = document.getElementById('message');
+    function entryKey(entryModel) {
+      return String(entryModel || '').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+    }
+
+    function chainRoot(entryModel) {
+      return document.querySelector('[data-entry-model="' + entryModel + '"]');
+    }
+
+    function setFocusedEntryModel(entryModel) {
+      if (entryModel) {
+        state.focusedEntryModel = entryModel;
+      }
+    }
+
+    function setMessage(entryModel, text, kind = '') {
+      const root = chainRoot(entryModel);
+      const node = root?.querySelector('[data-message]');
+      if (!node) return;
       node.textContent = text || '';
       node.className = 'msg' + (kind ? ' ' + kind : '');
     }
 
-    function setDirty(value) {
-      state.dirty = !!value;
-      const bar = document.getElementById('pending-bar');
-      const text = document.getElementById('pending-text');
-      if (state.dirty) {
-        bar.classList.add('is-visible');
-        text.textContent = '当前有未保存的顺序或状态改动';
-      } else {
-        bar.classList.remove('is-visible');
-        text.textContent = '当前有未保存的改动';
-      }
+    function setDirty(entryModel, value) {
+      state.dirtyByEntryModel[entryModel] = !!value;
     }
 
     function badgeHealth(ok) {
       return ok ? 'healthy' : 'unhealthy';
     }
 
-    function activeModels() {
-      return (state.order?.models || []).filter(item => item.enabled);
+    function preferredChains(chains) {
+      const priority = new Map([['gpt-5.5', 0], ['gpt-5.4', 1]]);
+      return (chains || []).slice().sort((a, b) => {
+        const aRank = priority.has(a.entryModel) ? priority.get(a.entryModel) : 99;
+        const bRank = priority.has(b.entryModel) ? priority.get(b.entryModel) : 99;
+        if (aRank !== bRank) return aRank - bRank;
+        return String(a.entryModel || '').localeCompare(String(b.entryModel || ''));
+      });
     }
 
-    function inactiveModels() {
-      return (state.order?.models || []).filter(item => !item.enabled);
+    function getOrder(entryModel) {
+      return state.chains.find(order => order.entryModel === entryModel) || null;
+    }
+
+    function activeModels(entryModel) {
+      return (getOrder(entryModel)?.models || []).filter(item => item.enabled);
+    }
+
+    function inactiveModels(entryModel) {
+      return (getOrder(entryModel)?.models || []).filter(item => !item.enabled);
+    }
+
+    function orderLabel(order) {
+      return String(order?.label || order?.entryModel || 'Model family');
+    }
+
+    function ownerLabel(order) {
+      return String(order?.owner || 'OpenClaw');
     }
 
     function renderHeader() {
       const summary = state.status?.summary || {};
-      const active = activeModels();
+      const primaryText = state.chains.map(order => {
+        const active = activeModels(order.entryModel);
+        return order.entryModel + ': ' + (active[0]?.model_name || '-');
+      }).join(' | ');
+      const fallbackText = state.chains.map(order => {
+        const active = activeModels(order.entryModel);
+        const names = active.slice(1).map(item => item.model_name).join(' > ') || 'none';
+        return order.entryModel + ': ' + names;
+      }).join(' | ');
       document.getElementById('gateway-health').textContent = badgeHealth(!!summary.litellmHealthy);
       document.getElementById('binding-email').textContent = summary.envBoundEmail || summary.resolvedProfileEmail || '-';
-      document.getElementById('current-main').textContent = active[0]?.model_name || '-';
-      document.getElementById('current-fallbacks').textContent = active.slice(1).map(item => item.model_name).join(' → ') || 'none';
+      document.getElementById('current-main').textContent = primaryText || '-';
+      document.getElementById('current-fallbacks').textContent = fallbackText || '-';
+      document.getElementById('current-fallbacks-label').textContent = 'Active Fallbacks';
+    }
+
+    function failoverGroupForEntryModel(entryModel) {
+      const normalizedEntryModel = normalizeModelName(entryModel);
+      const groups = state.failoverStats?.chainGroups || [];
+      return groups.find(group => normalizeModelName(group.primary || group.models?.[0]) === normalizedEntryModel)
+        || groups.find(group => (group.models || []).some(model => normalizeModelName(model) === normalizedEntryModel))
+        || null;
+    }
+
+    function runtimeLabel(chain) {
+      return String(chain?.label || chain?.entryModel || 'Gateway chain');
+    }
+
+    function renderRuntime() {
+      const root = document.getElementById('runtime-board');
+      const runtime = state.status?.runtime || {};
+      const chains = Array.isArray(runtime.chains) ? runtime.chains : [];
+      const generatedAt = runtime.generatedAt || state.status?.generatedAt || '';
+      document.getElementById('runtime-last-updated').textContent = generatedAt
+        ? '状态时间: ' + new Date(generatedAt).toLocaleString('zh-CN')
+        : '状态时间: unavailable';
+
+      const alerts = [];
+      root.innerHTML = '';
+      if (!chains.length) {
+        root.innerHTML = '<div class="runtime-chain"><strong>运行时状态不可用</strong><p>无法读取 Redis cooldown 与 probe 状态。</p></div>';
+        document.getElementById('runtime-alerts').innerHTML = '';
+        document.getElementById('runtime-summary-pill').textContent = 'runtime unavailable';
+        return;
+      }
+
+      chains.forEach((chain) => {
+        const label = runtimeLabel(chain);
+        const group = failoverGroupForEntryModel(chain.entryModel);
+        const summary = group?.summary || {};
+        const probe = chain.probe || {};
+        const latest = group?.recentEvents?.find(event => event.success && Number.isFinite(Number(event.depth))) || null;
+        const latestModel = latest?.model || latest?.deployment || '-';
+        const probeState = String(probe.state || '').toLowerCase();
+        const probeStatus = probe.available
+          ? (probeState || (probe.ok ? 'healthy' : 'unknown'))
+          : 'missing';
+        const cooldown = chain.cooldown || {};
+        const cooldownActive = !!cooldown.active;
+        const cooldownSeconds = Number(cooldown.ttlSeconds || 0);
+        const cooldownStatus = cooldownActive ? (cooldownSeconds > 0 ? cooldownSeconds + 's' : 'active') : 'clear';
+        const badgeClass = (probeStatus === 'healthy' || probeStatus === 'idle')
+          ? 'is-ok'
+          : (probeStatus === 'probing' || probeStatus === 'missing' || probeStatus === 'unavailable' || cooldownActive)
+            ? 'is-warn'
+            : (probeStatus === 'unhealthy' || probeStatus === 'malformed' ? 'is-bad' : '');
+        const runtimeDetail = cooldownActive
+          ? (probeStatus === 'probing'
+            ? `该入口模型正在 cooldown，探针已连续成功 ${formatCount(probe.consecutiveSuccesses)} 次。`
+            : '该入口模型正在 cooldown，新的请求会绕过它并按本链路 fallback 规则继续。')
+          : (probe.available
+            ? (probeStatus === 'idle'
+              ? '未处于 cooldown，探针待命。'
+              : (probe.ok ? '最近健康探针成功。' : ('最近健康探针失败：' + (probe.detail || probe.error || 'unknown error'))))
+            : '尚未记录该入口模型的健康探针。');
+        const card = document.createElement('article');
+        card.className = 'runtime-chain'
+          + (cooldownActive ? ' is-cooldown' : '')
+          + (probeStatus === 'probing' ? ' is-recovering' : '')
+          + (probeStatus === 'unhealthy' ? ' is-unhealthy' : '');
+        card.innerHTML = `
+          <div class="runtime-chain-head">
+            <div class="runtime-title">
+              <strong>${escapeHtml(label)}</strong>
+              <span>${escapeHtml((chain.owner || 'Gateway') + ' · ' + (chain.entryModel || '-'))}</span>
+            </div>
+            <span class="state-badge ${badgeClass}">${escapeHtml(probeStatus)}</span>
+          </div>
+          <div class="runtime-metrics">
+            <div class="runtime-metric"><span>当前入口</span><strong>${escapeHtml(chain.entryModel || '-')}</strong></div>
+            <div class="runtime-metric"><span>Cooldown</span><strong>${escapeHtml(cooldownStatus)}</strong></div>
+            <div class="runtime-metric"><span>最近实际落点</span><strong>${escapeHtml(latestModel)}</strong></div>
+            <div class="runtime-metric"><span>统计范围请求</span><strong>${formatCount(summary.totalRequests)}</strong></div>
+            <div class="runtime-metric"><span>进入备用</span><strong>${formatCount(summary.backupRequests)}</strong></div>
+            <div class="runtime-metric"><span>未恢复失败</span><strong>${formatCount(summary.unresolvedFailures)}</strong></div>
+          </div>
+          <div class="runtime-detail">${escapeHtml(runtimeDetail)}</div>
+        `;
+        root.appendChild(card);
+
+        if (cooldownActive) {
+          alerts.push(`${label} cooldown ${cooldownSeconds > 0 ? cooldownSeconds + 's' : 'active'}`);
+        }
+        if (probeStatus === 'unhealthy' || probeStatus === 'malformed' || probeStatus === 'unavailable') {
+          alerts.push(`${label} probe unhealthy`);
+        }
+      });
+
+      document.getElementById('runtime-summary-pill').textContent = alerts.length ? alerts.join(' | ') : '两条链路无 cooldown / probe 告警';
+      document.getElementById('runtime-alerts').innerHTML = alerts.length
+        ? alerts.map(alert => '<span class="runtime-alert">' + escapeHtml(alert) + '</span>').join('')
+        : '';
     }
 
     function renderFailoverSummary() {
-      const summary = state.failoverStats?.summary || {};
-      document.getElementById('failover-total-requests').textContent = summary.totalRequests ?? '-';
-      document.getElementById('failover-primary-completions').textContent = summary.primaryCompletions ?? '-';
-      document.getElementById('failover-backup-requests').textContent = summary.backupRequests ?? '-';
-      document.getElementById('failover-depth2-or-more').textContent = summary.depth2OrMore ?? '-';
-      document.getElementById('failover-unresolved-failures').textContent = summary.unresolvedFailures ?? '-';
+      const root = document.getElementById('failover-summary-stack');
+      const groupsByEntryModel = new Map((state.failoverStats?.chainGroups || [])
+        .map(group => [normalizeModelName(group.primary || group.models?.[0]), group]));
+      const rows = state.chains.length
+        ? state.chains.map((chain) => {
+            const group = groupsByEntryModel.get(normalizeModelName(chain.entryModel)) || failoverGroupForEntryModel(chain.entryModel);
+            return {
+              entryModel: chain.entryModel,
+              label: chain.label || group?.label || ('OpenClaw ' + chain.entryModel),
+              summary: group?.summary || {},
+            };
+          })
+        : (state.failoverStats?.chainGroups || []).map((group) => ({
+            entryModel: group.primary || group.models?.[0] || '',
+            label: group.label || group.primary || 'OpenClaw',
+            summary: group.summary || {},
+          }));
+
+      if (!rows.length) {
+        rows.push({
+          entryModel: state.focusedEntryModel || 'gpt-5.4',
+          label: 'OpenClaw ' + (state.focusedEntryModel || 'gpt-5.4'),
+          summary: activeFailoverStats()?.summary || {},
+        });
+      }
+
+      root.innerHTML = rows.map((row) => {
+        const summary = row.summary || {};
+        return `
+          <div class="failover-summary-row" data-summary-entry-model="${escapeHtml(row.entryModel)}">
+            <div class="chip">
+              <span class="label">${escapeHtml(row.label)} 总请求</span>
+              <span class="value">${formatCount(summary.totalRequests)}</span>
+            </div>
+            <div class="chip ok">
+              <span class="label">${escapeHtml(row.label)} 主链完成</span>
+              <span class="value">${formatCount(summary.primaryCompletions)}</span>
+            </div>
+            <div class="chip warn">
+              <span class="label">${escapeHtml(row.label)} 进入备用</span>
+              <span class="value">${formatCount(summary.backupRequests)}</span>
+            </div>
+            <div class="chip warn">
+              <span class="label">${escapeHtml(row.label)} 第二备用</span>
+              <span class="value">${formatCount(summary.depth2OrMore)}</span>
+            </div>
+            <div class="chip bad">
+              <span class="label">${escapeHtml(row.label)} 未恢复失败</span>
+              <span class="value">${formatCount(summary.unresolvedFailures)}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+      document.querySelectorAll('[data-failover-window]').forEach(button => {
+        button.classList.toggle('is-active', button.dataset.failoverWindow === state.failoverWindow);
+      });
+    }
+
+    function formatCount(value) {
+      const num = Number(value || 0);
+      return Number.isFinite(num) ? num.toLocaleString('zh-CN') : '0';
+    }
+
+    function normalizeModelName(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function selectedFailoverGroup() {
+      return failoverGroupForEntryModel(state.focusedEntryModel || 'gpt-5.4');
+    }
+
+    function activeFailoverStats(entryModel = state.focusedEntryModel) {
+      return failoverGroupForEntryModel(entryModel) || state.failoverStats || {};
+    }
+
+    function stationStatsFor(entryModel, item, index) {
+      const chain = activeFailoverStats(entryModel)?.chain || [];
+      const byDepth = chain.find(row => Number(row.depth) === index);
+      if (byDepth) return byDepth;
+      const modelName = normalizeModelName(item.model_name);
+      return chain.find(row => normalizeModelName(row.model) === modelName) || {};
+    }
+
+    function renderStationStats(row, index) {
+      const called = Number(row.called || 0);
+      const success = index === 0
+        ? Number(row.finalSuccesses || 0)
+        : Number(row.fallbackSuccesses || row.finalSuccesses || 0);
+      const failure = Number(row.finalFailures || 0) + Number(row.fallbackFailures || 0);
+      const successLabel = index === 0 ? '主链完成' : '承接成功';
+      return `
+        <div class="station-stats" data-tooltip="当前统计范围内，这个中转站在调用链中被实际走到的次数。">
+          <span class="stat-label">被调用次数</span>
+          <strong class="stat-main">${formatCount(called)}</strong>
+          <div class="station-stat-line"><span>${successLabel}</span><strong>${formatCount(success)}</strong></div>
+          <div class="station-stat-line"><span>失败记录</span><strong>${formatCount(failure)}</strong></div>
+        </div>
+      `;
     }
 
     function swap(arr, from, to) {
@@ -800,15 +1384,31 @@ UI_HTML = """<!doctype html>
         .replaceAll("'", '&#39;');
     }
 
-    function clearDragState() {
-      state.dragModelName = null;
-      state.dragOverModelName = null;
-      state.dragOverPosition = null;
+    function latestRouteDepthFor(entryModel) {
+      const recent = activeFailoverStats(entryModel)?.recentEvents || [];
+      const relevantTypes = new Set([
+        'client_request_success',
+        'client_request_failure',
+        'request_success',
+        'request_failure',
+        'fallback_success',
+        'fallback_failure',
+      ]);
+      const latest = recent.find(event => relevantTypes.has(event.eventType));
+      if (!latest || !latest.success) return null;
+      const depth = Number(latest.depth || 0);
+      return Number.isFinite(depth) ? depth : null;
     }
 
-    function syncOrder(active, inactive) {
+    function clearDragState() {
+      state.drag = null;
+    }
+
+    function syncOrder(entryModel, active, inactive) {
+      const order = getOrder(entryModel);
+      if (!order) return;
       const nextActiveNames = new Set(active.map(item => item.model_name));
-      state.order.models = active.map(item => ({ ...item, enabled: true }))
+      order.models = active.map(item => ({ ...item, enabled: true }))
         .concat(
           inactive
             .filter(item => !nextActiveNames.has(item.model_name))
@@ -817,21 +1417,30 @@ UI_HTML = """<!doctype html>
     }
 
     function createUnsavedSnapshot() {
+      const chains = {};
+      state.chains.forEach(order => {
+        chains[order.entryModel] = {
+          activeUpstreamIds: activeModels(order.entryModel).map(item => item.upstreamId),
+          inactiveUpstreamIds: inactiveModels(order.entryModel).map(item => item.upstreamId),
+        };
+      });
       return {
-        dirty: !!state.dirty,
-        activeUpstreamIds: activeModels().map(item => item.upstreamId),
-        inactiveUpstreamIds: inactiveModels().map(item => item.upstreamId),
+        dirtyByEntryModel: { ...state.dirtyByEntryModel },
+        chains,
       };
     }
 
-    function applyUnsavedSnapshot(order, snapshot) {
-      if (!snapshot?.dirty || !order?.models) {
+    function applyUnsavedSnapshotToOrder(order, snapshot) {
+      const entryModel = order?.entryModel;
+      const dirty = !!snapshot?.dirtyByEntryModel?.[entryModel];
+      const saved = snapshot?.chains?.[entryModel];
+      if (!dirty || !saved || !order?.models) {
         return order;
       }
       const byUpstreamId = new Map((order.models || []).map(item => [item.upstreamId, item]));
       const nextActive = [];
       const seen = new Set();
-      (snapshot.activeUpstreamIds || []).forEach((upstreamId) => {
+      (saved.activeUpstreamIds || []).forEach((upstreamId) => {
         const item = byUpstreamId.get(upstreamId);
         if (!item || seen.has(upstreamId)) {
           return;
@@ -846,7 +1455,7 @@ UI_HTML = """<!doctype html>
         }
       });
       const nextInactive = [];
-      (snapshot.inactiveUpstreamIds || []).forEach((upstreamId) => {
+      (saved.inactiveUpstreamIds || []).forEach((upstreamId) => {
         const item = byUpstreamId.get(upstreamId);
         if (!item || seen.has(upstreamId)) {
           return;
@@ -866,12 +1475,12 @@ UI_HTML = """<!doctype html>
       };
     }
 
-    function reorderActiveModel(dragModelName, targetModelName, position) {
+    function reorderActiveModel(entryModel, dragModelName, targetModelName, position) {
       if (!dragModelName || !targetModelName || !position || dragModelName === targetModelName) {
         return false;
       }
-      const active = activeModels();
-      const inactive = inactiveModels();
+      const active = activeModels(entryModel);
+      const inactive = inactiveModels(entryModel);
       const fromIndex = active.findIndex(item => item.model_name === dragModelName);
       const targetIndex = active.findIndex(item => item.model_name === targetModelName);
       if (fromIndex < 0 || targetIndex < 0) {
@@ -891,16 +1500,17 @@ UI_HTML = """<!doctype html>
       if (next.every((item, index) => item.model_name === active[index]?.model_name)) {
         return false;
       }
-      syncOrder(next, inactive);
-      setDirty(true);
+      syncOrder(entryModel, next, inactive);
+      setDirty(entryModel, true);
+      setFocusedEntryModel(entryModel);
       rerender();
-      setMessage('顺序已通过拖拽更新，尚未保存。', 'warn');
+      setMessage(entryModel, '顺序已通过拖拽更新，尚未保存。', 'warn');
       return true;
     }
 
-    function renderActive() {
-      const root = document.getElementById('active-stack');
-      const active = activeModels();
+    function renderActive(entryModel, root) {
+      const active = activeModels(entryModel);
+      const dirty = !!state.dirtyByEntryModel[entryModel];
       root.innerHTML = '';
       if (!active.length) {
         root.innerHTML = '<div class="pool-item disabled">当前没有启用中的模型。</div>';
@@ -908,13 +1518,19 @@ UI_HTML = """<!doctype html>
       }
       active.forEach((item, index) => {
         const card = document.createElement('article');
-        const dragOverClass = state.dragOverModelName === item.model_name && state.dragOverPosition
-          ? ' drag-over-' + state.dragOverPosition
+        const row = stationStatsFor(entryModel, item, index);
+        const liveDepth = latestRouteDepthFor(entryModel);
+        const isLive = liveDepth === index;
+        const lightTooltip = isLive
+          ? '最近一次成功请求由这个中转站承接。'
+          : '最近一次成功请求没有落到这个中转站。';
+        const dragOverClass = state.drag?.entryModel === entryModel && state.drag?.overModelName === item.model_name && state.drag?.overPosition
+          ? ' drag-over-' + state.drag.overPosition
           : '';
         card.className = 'card'
           + (index === 0 ? ' is-main' : '')
-          + (state.dirty ? ' is-pending' : '')
-          + (state.dragModelName === item.model_name ? ' is-dragging' : '')
+          + (dirty ? ' is-pending' : '')
+          + (state.drag?.entryModel === entryModel && state.drag?.modelName === item.model_name ? ' is-dragging' : '')
           + dragOverClass;
         card.draggable = true;
         card.dataset.index = String(index);
@@ -923,26 +1539,33 @@ UI_HTML = """<!doctype html>
         card.innerHTML = `
           <div class="card-topline">
             <span class="drag-handle" data-tooltip="按住后拖拽这张卡片，可直接调整主模型和备用模型的真实顺序。">drag to reorder</span>
-            <span class="tag">${item.upstreamKey || 'UNKNOWN'}</span>
+            <span class="tag route-light ${isLive ? 'is-live' : ''}" data-tooltip="${lightTooltip}">${escapeHtml(item.upstreamKey || 'UNKNOWN')}</span>
           </div>
           <div class="card-head">
-            <div>
+            <div class="card-info">
               <span class="slot ${index === 0 ? '' : 'fallback'}">${slot}</span>
               <p class="model-name">${escapeHtml(item.model_name)}</p>
               <p class="model-sub">${escapeHtml(item.apiBase || '-')} </p>
             </div>
           </div>
-          <div class="controls">
-            <button class="btn-main" data-action="main" data-index="${index}" data-tooltip="把该模型提升为主模型，当前第一位的主模型会变成 fallback #1。">设为主模型</button>
-            <button class="btn-danger-soft" data-action="disable" data-index="${index}" data-tooltip="把该模型切换为 bypassed。参数会保留，但当前不会被调用。">bypass</button>
-            <button class="btn-ghost" data-action="edit" data-index="${index}" data-tooltip="修改这个中转站的名称、请求地址和 API key。保存后会立即重启 LiteLLM。">edit</button>
+          <div class="card-bottom">
+            <div class="controls">
+              <button class="btn-main" data-action="main" data-index="${index}" data-tooltip="把该模型提升为主模型，当前第一位的主模型会变成 fallback #1。">设为主模型</button>
+              <button class="btn-danger-soft" data-action="disable" data-index="${index}" data-tooltip="把该模型切换为 bypassed。参数会保留，但当前不会被调用。">bypass</button>
+              <button class="btn-ghost" data-action="edit" data-index="${index}" data-tooltip="修改这个中转站的名称、请求地址和 API key。保存后会立即重启 LiteLLM。">edit</button>
+            </div>
+            ${renderStationStats(row, index)}
           </div>
         `;
         root.appendChild(card);
         card.addEventListener('dragstart', (event) => {
-          state.dragModelName = item.model_name;
-          state.dragOverModelName = null;
-          state.dragOverPosition = null;
+          setFocusedEntryModel(entryModel);
+          state.drag = {
+            entryModel,
+            modelName: item.model_name,
+            overModelName: null,
+            overPosition: null,
+          };
           card.classList.add('is-dragging');
           if (event.dataTransfer) {
             event.dataTransfer.effectAllowed = 'move';
@@ -950,31 +1573,31 @@ UI_HTML = """<!doctype html>
           }
         });
         card.addEventListener('dragover', (event) => {
-          if (!state.dragModelName || state.dragModelName === item.model_name) {
+          if (!state.drag || state.drag.entryModel !== entryModel || state.drag.modelName === item.model_name) {
             return;
           }
           event.preventDefault();
           const rect = card.getBoundingClientRect();
           const midpoint = rect.top + rect.height / 2;
-          state.dragOverModelName = item.model_name;
-          state.dragOverPosition = event.clientY < midpoint ? 'top' : 'bottom';
-          card.classList.toggle('drag-over-top', state.dragOverPosition === 'top');
-          card.classList.toggle('drag-over-bottom', state.dragOverPosition === 'bottom');
+          state.drag.overModelName = item.model_name;
+          state.drag.overPosition = event.clientY < midpoint ? 'top' : 'bottom';
+          card.classList.toggle('drag-over-top', state.drag.overPosition === 'top');
+          card.classList.toggle('drag-over-bottom', state.drag.overPosition === 'bottom');
         });
         card.addEventListener('dragleave', (event) => {
           if (!card.contains(event.relatedTarget)) {
-            if (state.dragOverModelName === item.model_name) {
-              state.dragOverModelName = null;
-              state.dragOverPosition = null;
+            if (state.drag?.overModelName === item.model_name) {
+              state.drag.overModelName = null;
+              state.drag.overPosition = null;
             }
             card.classList.remove('drag-over-top', 'drag-over-bottom');
           }
         });
         card.addEventListener('drop', (event) => {
           event.preventDefault();
-          const dragModelName = state.dragModelName || event.dataTransfer?.getData('text/plain') || '';
-          const position = state.dragOverPosition || 'bottom';
-          const changed = reorderActiveModel(dragModelName, item.model_name, position);
+          const dragModelName = state.drag?.modelName || event.dataTransfer?.getData('text/plain') || '';
+          const position = state.drag?.overPosition || 'bottom';
+          const changed = reorderActiveModel(entryModel, dragModelName, item.model_name, position);
           clearDragState();
           if (!changed) {
             rerender();
@@ -989,14 +1612,13 @@ UI_HTML = """<!doctype html>
         const index = Number(button.dataset.index);
         const action = button.dataset.action;
         if (action === 'disable' && active.length === 1) button.disabled = true;
-        button.addEventListener('click', () => mutateActive(action, index));
+        button.addEventListener('click', () => mutateActive(entryModel, action, index));
       });
     }
 
-    function renderPool() {
-      const root = document.getElementById('pool');
-      const activeSet = new Set(activeModels().map(item => item.model_name));
-      const items = [...activeModels(), ...inactiveModels()];
+    function renderPool(entryModel, root) {
+      const activeSet = new Set(activeModels(entryModel).map(item => item.model_name));
+      const items = [...activeModels(entryModel), ...inactiveModels(entryModel)];
       root.innerHTML = '';
       items.forEach(item => {
         const active = activeSet.has(item.model_name);
@@ -1021,51 +1643,53 @@ UI_HTML = """<!doctype html>
         const action = node.dataset.action;
         if (node.tagName === 'BUTTON' && action === 'enable-fallback' && activeSet.has(name)) node.disabled = true;
         node.addEventListener('click', () => {
+          setFocusedEntryModel(entryModel);
           if (action === 'edit') {
-            openEdit(name);
+            openEdit(entryModel, name);
             return;
           }
           if (action === 'toggle-status') {
-            togglePoolStatus(name);
+            togglePoolStatus(entryModel, name);
             return;
           }
-          mutatePool(action, name);
+          mutatePool(entryModel, action, name);
         });
       });
     }
 
     function rerender() {
       renderHeader();
+      renderRuntime();
       renderFailoverSummary();
-      renderActive();
-      renderPool();
+      renderChains();
     }
 
-    function mutateActive(action, index) {
-      const active = activeModels();
-      const inactive = inactiveModels();
+    function mutateActive(entryModel, action, index) {
+      setFocusedEntryModel(entryModel);
+      const active = activeModels(entryModel);
+      const inactive = inactiveModels(entryModel);
       let next = active.slice();
       if (action === 'main' && index > 0) next = swap(next, index, 0);
       if (action === 'edit') {
-        openEdit(active[index].model_name);
+        openEdit(entryModel, active[index].model_name);
         return;
       }
       if (action === 'disable') {
         const [removed] = next.splice(index, 1);
         inactive.push({ ...removed, enabled: false });
       }
-      syncOrder(next, inactive);
-      setDirty(true);
+      syncOrder(entryModel, next, inactive);
+      setDirty(entryModel, true);
       rerender();
-      setMessage('顺序已更新，尚未保存。', 'warn');
+      setMessage(entryModel, '顺序已更新，尚未保存。', 'warn');
     }
 
-    function mutatePool(action, modelName) {
-      const models = state.order.models || [];
+    function mutatePool(entryModel, action, modelName) {
+      const models = getOrder(entryModel)?.models || [];
       const found = models.find(item => item.model_name === modelName);
       if (!found) return;
-      let active = activeModels();
-      const inactive = inactiveModels().filter(item => item.model_name !== modelName);
+      let active = activeModels(entryModel);
+      const inactive = inactiveModels(entryModel).filter(item => item.model_name !== modelName);
       if (action === 'enable-main') {
         active = active.filter(item => item.model_name !== modelName);
         active.unshift({ ...found, enabled: true });
@@ -1076,25 +1700,24 @@ UI_HTML = """<!doctype html>
       if (action === 'disable') {
         active = active.filter(item => item.model_name !== modelName);
       }
-      syncOrder(active, inactive);
-      setDirty(true);
+      syncOrder(entryModel, active, inactive);
+      setDirty(entryModel, true);
       rerender();
-      setMessage('顺序已更新，尚未保存。', 'warn');
+      setMessage(entryModel, '顺序已更新，尚未保存。', 'warn');
     }
 
-    function togglePoolStatus(modelName) {
-      const active = activeModels();
-      const inactive = inactiveModels();
+    function togglePoolStatus(entryModel, modelName) {
+      const active = activeModels(entryModel);
       const inActive = active.find(item => item.model_name === modelName);
       if (inActive) {
         if (active.length === 1) {
-          setMessage('至少需要保留一个 active 模型。', 'bad');
+          setMessage(entryModel, '至少需要保留一个 active 模型。', 'bad');
           return;
         }
-        mutatePool('disable', modelName);
+        mutatePool(entryModel, 'disable', modelName);
         return;
       }
-      mutatePool('enable-fallback', modelName);
+      mutatePool(entryModel, 'enable-fallback', modelName);
     }
 
     async function fetchJson(url, options = {}) {
@@ -1106,48 +1729,86 @@ UI_HTML = """<!doctype html>
       return payload;
     }
 
+    function failoverStatsUrl() {
+      return '/failover-stats?window=' + encodeURIComponent(state.failoverWindow);
+    }
+
+    async function loadFailoverStats() {
+      state.failoverStats = await fetchJson(failoverStatsUrl()).catch(() => null);
+      renderFailoverSummary();
+      renderChains();
+    }
+
+    async function setFailoverWindow(windowName) {
+      state.failoverWindow = windowName;
+      await loadFailoverStats();
+      const label = { today: '今日', '3d': '3 天内', '7d': '7 天内' }[windowName] || windowName;
+      setMessage(state.focusedEntryModel, '已切换统计范围：' + label, 'ok');
+    }
+
     async function loadAll() {
-      setMessage('正在读取当前状态...', '');
       const [status, order, failoverStats] = await Promise.all([
         fetchJson('/status'),
         fetchJson('/router-config'),
-        fetchJson('/failover-stats?window=all').catch(() => null)
+        fetchJson(failoverStatsUrl()).catch(() => null)
       ]);
       state.status = status;
-      state.order = order;
+      state.chains = preferredChains(Array.isArray(order.chains) && order.chains.length ? order.chains : [order]);
       state.failoverStats = failoverStats;
-      setDirty(false);
+      state.dirtyByEntryModel = {};
+      state.chains.forEach(chain => setDirty(chain.entryModel, false));
+      if (!getOrder(state.focusedEntryModel) && state.chains[0]) {
+        state.focusedEntryModel = state.chains[0].entryModel;
+      }
       rerender();
-      setMessage('已加载当前生产配置。', 'ok');
     }
 
-    async function refreshAfterImmediateModelChange(messageText) {
+    async function refreshAfterImmediateModelChange(entryModel, messageText) {
       const snapshot = createUnsavedSnapshot();
       const [status, freshOrder, failoverStats] = await Promise.all([
         fetchJson('/status'),
         fetchJson('/router-config'),
-        fetchJson('/failover-stats?window=all').catch(() => null),
+        fetchJson(failoverStatsUrl()).catch(() => null),
       ]);
       state.status = status;
       state.failoverStats = failoverStats;
-      state.order = applyUnsavedSnapshot(freshOrder, snapshot);
-      setDirty(snapshot.dirty);
+      state.chains = preferredChains((Array.isArray(freshOrder.chains) && freshOrder.chains.length ? freshOrder.chains : [freshOrder])
+        .map(order => applyUnsavedSnapshotToOrder(order, snapshot)));
+      state.dirtyByEntryModel = { ...snapshot.dirtyByEntryModel };
       rerender();
-      setMessage(messageText, 'ok');
+      setMessage(entryModel, messageText, 'ok');
     }
 
-    async function save() {
-      const active = activeModels();
+    async function resetFailoverStats() {
+      const ok = window.confirm('确认清除当前统计显示并从此刻重新计数？原始 SQLite/JSONL 日志会保留。');
+      if (!ok) return;
+      const button = document.getElementById('failover-reset-btn');
+      button.disabled = true;
+      try {
+        await fetchJson('/failover-stats/reset', { method: 'POST' });
+        await loadFailoverStats();
+        setMessage(state.focusedEntryModel, '统计已清零，后续请求会从当前时间重新累计。', 'ok');
+      } catch (err) {
+        setMessage(state.focusedEntryModel, '清除统计失败：' + err.message, 'bad');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function save(entryModel) {
+      setFocusedEntryModel(entryModel);
+      const active = activeModels(entryModel);
       if (!active.length) {
-        setMessage('至少需要保留一个启用中的模型。', 'bad');
+        setMessage(entryModel, '至少需要保留一个启用中的模型。', 'bad');
         return;
       }
       const payload = {
+        entryModel,
         entryUpstreamId: active[0].upstreamId,
         fallbackChain: active.slice(1).map(item => item.upstreamId),
       };
-      setMessage('正在写回配置并重启 LiteLLM...', 'warn');
-      document.getElementById('save-btn').disabled = true;
+      setMessage(entryModel, '正在写回配置并重启 LiteLLM...', 'warn');
+      chainRoot(entryModel)?.querySelectorAll('[data-action="save"]').forEach(node => { node.disabled = true; });
       try {
         const result = await fetchJson('/router-config', {
           method: 'POST',
@@ -1155,11 +1816,11 @@ UI_HTML = """<!doctype html>
           body: JSON.stringify(payload),
         });
         await loadAll();
-        setMessage('保存成功，LiteLLM 已重启。' + (result.message ? ' ' + result.message : ''), 'ok');
+        setMessage(entryModel, '保存成功，LiteLLM 已重启。' + (result.message ? ' ' + result.message : ''), 'ok');
       } catch (err) {
-        setMessage('保存失败：' + err.message, 'bad');
+        setMessage(entryModel, '保存失败：' + err.message, 'bad');
       } finally {
-        document.getElementById('save-btn').disabled = false;
+        chainRoot(entryModel)?.querySelectorAll('[data-action="save"]').forEach(node => { node.disabled = false; });
       }
     }
 
@@ -1170,12 +1831,13 @@ UI_HTML = """<!doctype html>
       overlay.setAttribute('aria-hidden', 'true');
     }
 
-    function openEdit(modelName) {
-      const model = (state.order?.models || []).find(item => item.model_name === modelName);
+    function openEdit(entryModel, modelName) {
+      const model = (getOrder(entryModel)?.models || []).find(item => item.model_name === modelName);
       if (!model) return;
-      state.editingModel = model;
+      setFocusedEntryModel(entryModel);
+      state.editingModel = { entryModel, model };
       const deleteButton = document.getElementById('edit-delete-btn');
-      document.getElementById('edit-title').textContent = '编辑中转站: ' + model.model_name;
+      document.getElementById('edit-title').textContent = '编辑中转站: ' + model.model_name + ' (' + entryModel + ')';
       document.getElementById('edit-model-name').value = model.model_name || '';
       document.getElementById('edit-base-url').value = model.baseUrlValue || '';
       document.getElementById('edit-api-key').value = '';
@@ -1190,32 +1852,35 @@ UI_HTML = """<!doctype html>
 
     async function saveEdit() {
       if (!state.editingModel) return;
+      const entryModel = state.editingModel.entryModel;
+      const editing = state.editingModel.model;
       const modelName = document.getElementById('edit-model-name').value.trim();
       const baseUrl = document.getElementById('edit-base-url').value.trim();
       const apiKeyInput = document.getElementById('edit-api-key').value;
       const apiKey = apiKeyInput.trim();
       if (!modelName || !baseUrl || !apiKey) {
-        setMessage('名称、请求地址、API key 都不能为空。', 'bad');
+        setMessage(entryModel, '名称、请求地址、API key 都不能为空。', 'bad');
         return;
       }
       const button = document.getElementById('edit-save-btn');
       button.disabled = true;
-      setMessage('正在更新中转站参数并重启 LiteLLM...', 'warn');
+      setMessage(entryModel, '正在更新中转站参数并重启 LiteLLM...', 'warn');
       try {
         await fetchJson('/router-config/model', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            upstreamId: state.editingModel.upstreamId,
+            entryModel,
+            upstreamId: editing.upstreamId,
             modelName,
             baseUrl,
             apiKey,
           }),
         });
         closeEdit();
-        await refreshAfterImmediateModelChange('中转站参数已更新，LiteLLM 已重启。');
+        await refreshAfterImmediateModelChange(entryModel, '中转站参数已更新，LiteLLM 已重启。');
       } catch (err) {
-        setMessage('中转站参数更新失败：' + err.message, 'bad');
+        setMessage(entryModel, '中转站参数更新失败：' + err.message, 'bad');
       } finally {
         button.disabled = false;
       }
@@ -1223,32 +1888,35 @@ UI_HTML = """<!doctype html>
 
     async function testEditConnection() {
       if (!state.editingModel) return;
+      const entryModel = state.editingModel.entryModel;
+      const editing = state.editingModel.model;
       const modelName = document.getElementById('edit-model-name').value.trim();
       const baseUrl = document.getElementById('edit-base-url').value.trim();
       const apiKeyInput = document.getElementById('edit-api-key').value;
       const apiKey = apiKeyInput.trim();
       if (!modelName || !baseUrl || !apiKey) {
-        setMessage('测试前需要填入名称、请求地址和 API key。', 'bad');
+        setMessage(entryModel, '测试前需要填入名称、请求地址和 API key。', 'bad');
         return;
       }
       const button = document.getElementById('edit-test-btn');
       button.disabled = true;
-      setMessage('正在测试中转站连通性...', 'info');
+      setMessage(entryModel, '正在测试中转站连通性...', 'info');
       try {
         const result = await fetchJson('/router-config/model/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            upstreamId: state.editingModel.upstreamId,
+            entryModel,
+            upstreamId: editing.upstreamId,
             modelName,
             baseUrl,
             apiKey,
           }),
         });
         const detail = result.probe?.detail ? (' ' + result.probe.detail) : '';
-        setMessage('测试成功：' + (result.probe?.method || 'probe_ok') + detail, 'ok');
+        setMessage(entryModel, '测试成功：' + (result.probe?.method || 'probe_ok') + detail, 'ok');
       } catch (err) {
-        setMessage('测试失败：' + err.message, 'bad');
+        setMessage(entryModel, '测试失败：' + err.message, 'bad');
       } finally {
         button.disabled = false;
       }
@@ -1256,30 +1924,33 @@ UI_HTML = """<!doctype html>
 
     async function deleteEditModel() {
       if (!state.editingModel) return;
-      if (state.editingModel.enabled) {
-        setMessage('当前处于 active 的中转站不能删除。请先切到 bypassed。', 'bad');
+      const entryModel = state.editingModel.entryModel;
+      const editing = state.editingModel.model;
+      if (editing.enabled) {
+        setMessage(entryModel, '当前处于 active 的中转站不能删除。请先切到 bypassed。', 'bad');
         return;
       }
-      const modelName = state.editingModel.model_name || '';
+      const modelName = editing.model_name || '';
       const confirmed = window.confirm('确认删除中转站 "' + modelName + '" 吗？该操作会移除模型定义和对应环境变量，并重启 LiteLLM。');
       if (!confirmed) {
         return;
       }
       const button = document.getElementById('edit-delete-btn');
       button.disabled = true;
-      setMessage('正在删除中转站并重启 LiteLLM...', 'warn');
+      setMessage(entryModel, '正在删除中转站并重启 LiteLLM...', 'warn');
       try {
         await fetchJson('/router-config/model/delete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            upstreamId: state.editingModel.upstreamId,
+            entryModel,
+            upstreamId: editing.upstreamId,
           }),
         });
         closeEdit();
-        await refreshAfterImmediateModelChange('中转站已删除，LiteLLM 已重启。');
+        await refreshAfterImmediateModelChange(entryModel, '中转站已删除，LiteLLM 已重启。');
       } catch (err) {
-        setMessage('删除中转站失败：' + err.message, 'bad');
+        setMessage(entryModel, '删除中转站失败：' + err.message, 'bad');
       } finally {
         button.disabled = false;
       }
@@ -1291,10 +1962,13 @@ UI_HTML = """<!doctype html>
       overlay.setAttribute('aria-hidden', 'true');
     }
 
-    function openNewModel() {
+    function openNewModel(entryModel) {
+      setFocusedEntryModel(entryModel);
+      state.newModelEntryModel = entryModel;
       document.getElementById('new-model-name').value = '';
       document.getElementById('new-model-base-url').value = '';
       document.getElementById('new-model-api-key').value = '';
+      document.getElementById('new-model-title').textContent = '添加新模型: ' + entryModel;
       const overlay = document.getElementById('new-model-overlay');
       overlay.classList.add('open');
       overlay.setAttribute('aria-hidden', 'false');
@@ -1302,44 +1976,115 @@ UI_HTML = """<!doctype html>
 
     async function saveNewModel() {
       const modelName = document.getElementById('new-model-name').value.trim();
+      const entryModel = state.newModelEntryModel || state.focusedEntryModel || 'gpt-5.4';
       const baseUrl = document.getElementById('new-model-base-url').value.trim();
       const apiKey = document.getElementById('new-model-api-key').value.trim();
       if (!modelName || !baseUrl || !apiKey) {
-        setMessage('新模型的名称、请求地址、API key 都不能为空。', 'bad');
+        setMessage(entryModel, '新模型的名称、请求地址、API key 都不能为空。', 'bad');
         return;
       }
       const button = document.getElementById('new-model-save-btn');
       button.disabled = true;
-      setMessage('正在创建新模型并重启 LiteLLM...', 'warn');
+      setMessage(entryModel, '正在创建新模型并重启 LiteLLM...', 'warn');
       try {
         await fetchJson('/router-config/model/new', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            entryModel,
             modelName,
             baseUrl,
             apiKey,
           }),
         });
         closeNewModel();
-        await refreshAfterImmediateModelChange('新模型已创建并重启 LiteLLM。');
+        await refreshAfterImmediateModelChange(entryModel, '新模型已创建并重启 LiteLLM。');
       } catch (err) {
-        setMessage('创建新模型失败：' + err.message, 'bad');
+        setMessage(entryModel, '创建新模型失败：' + err.message, 'bad');
       } finally {
         button.disabled = false;
       }
     }
 
-    document.getElementById('save-btn').addEventListener('click', save);
-    document.getElementById('reload-btn').addEventListener('click', loadAll);
-    document.getElementById('pending-save-btn').addEventListener('click', save);
-    document.getElementById('pending-reload-btn').addEventListener('click', loadAll);
+    function renderChains() {
+      const root = document.getElementById('chain-grid');
+      root.innerHTML = '';
+      state.chains.forEach(order => {
+        const entryModel = order.entryModel;
+        const key = entryKey(entryModel);
+        const dirty = !!state.dirtyByEntryModel[entryModel];
+        const column = document.createElement('section');
+        column.className = 'chain-column';
+        column.dataset.entryModel = entryModel;
+        column.innerHTML = `
+          <div class="panel" data-active-panel>
+            <div class="panel-title-row">
+              <div>
+                <h2>${escapeHtml(ownerLabel(order))} Active Order</h2>
+                <span class="chain-kicker">${escapeHtml(entryModel)} · ${escapeHtml(order.backendModel || 'missing backend')}</span>
+              </div>
+              <span class="tag ${dirty ? 'is-bypassed' : 'is-active'}">${dirty ? 'unsaved' : 'synced'}</span>
+            </div>
+            <p class="meta">顶部卡片代表当前会被实际调用的顺序。第一张卡片是主模型，后续依次是备用模型。<span class="helper" tabindex="0" data-tooltip="这里的变更先保存在页面状态里，不会立刻写入当前配置。只有点击本列的保存按钮后，才会更新该模型族的入口和 fallback。">?</span></p>
+            <div id="active-stack-${key}" class="stack" data-active-stack></div>
+            <div class="toolbar">
+              <button class="btn-main" data-action="save" data-tooltip="只保存 ${escapeHtml(entryModel)} 这一列的顺序与 active/bypassed 状态，并重启 LiteLLM。">保存并重启 LiteLLM</button>
+              <button class="btn-ghost" data-action="reload" data-tooltip="放弃页面里尚未保存的改动，重新从当前配置读取状态。">重新读取当前配置</button>
+            </div>
+            <div class="save-hint">拖动顺序前先决定哪些模型处于 active 状态；bypassed 模型不会进入当前调用链。</div>
+            <div class="pending-bar ${dirty ? 'is-visible' : ''}" data-pending-bar>
+              <span>当前有未保存的顺序或状态改动</span>
+              <div class="pending-actions">
+                <button class="btn-main" data-action="save">立即保存</button>
+                <button class="btn-ghost" data-action="reload">放弃改动</button>
+              </div>
+            </div>
+            <div class="msg" data-message></div>
+          </div>
+          <aside class="panel" data-pool-panel>
+            <div class="panel-title-row">
+              <div>
+                <h2>${escapeHtml(ownerLabel(order))} Model Pool</h2>
+                <span class="chain-kicker">${escapeHtml(orderLabel(order))}</span>
+              </div>
+              <span class="tag" data-tooltip="active / bypassed 切换只改变本列待保存状态。">pool</span>
+            </div>
+            <p class="meta">这里列出该模型族已经定义的所有上游别名。可以先切换 active / bypassed，再决定是否设为主模型或加入备用队列。</p>
+            <div class="panel-actions">
+              <button class="btn-main" data-action="add-model" data-tooltip="创建新的 ${escapeHtml(entryModel)} 中转站模型，写入配置并重启 LiteLLM。">添加新模型</button>
+              <span class="tag">active / bypassed 可先切换, 再统一保存</span>
+            </div>
+            <div id="pool-${key}" class="pool" data-pool></div>
+            <div class="note">
+              此面板只修改 <code>${escapeHtml(entryModel)}</code> 的入口、fallback 和同族模型定义。保存后由本地服务自动重启当前 LiteLLM 容器。
+            </div>
+          </aside>
+        `;
+        root.appendChild(column);
+        column.addEventListener('click', () => setFocusedEntryModel(entryModel));
+        renderActive(entryModel, column.querySelector('[data-active-stack]'));
+        renderPool(entryModel, column.querySelector('[data-pool]'));
+        column.querySelectorAll('[data-action="save"]').forEach(button => {
+          button.addEventListener('click', () => save(entryModel));
+        });
+        column.querySelectorAll('[data-action="reload"]').forEach(button => {
+          button.addEventListener('click', loadAll);
+        });
+        column.querySelectorAll('[data-action="add-model"]').forEach(button => {
+          button.addEventListener('click', () => openNewModel(entryModel));
+        });
+      });
+    }
+
+    document.querySelectorAll('[data-failover-window]').forEach(button => {
+      button.addEventListener('click', () => setFailoverWindow(button.dataset.failoverWindow));
+    });
+    document.getElementById('failover-reset-btn').addEventListener('click', resetFailoverStats);
     document.getElementById('edit-close-btn').addEventListener('click', closeEdit);
     document.getElementById('edit-cancel-btn').addEventListener('click', closeEdit);
     document.getElementById('edit-delete-btn').addEventListener('click', deleteEditModel);
     document.getElementById('edit-test-btn').addEventListener('click', testEditConnection);
     document.getElementById('edit-save-btn').addEventListener('click', saveEdit);
-    document.getElementById('add-model-btn').addEventListener('click', openNewModel);
     document.getElementById('new-model-close-btn').addEventListener('click', closeNewModel);
     document.getElementById('new-model-cancel-btn').addEventListener('click', closeNewModel);
     document.getElementById('new-model-save-btn').addEventListener('click', saveNewModel);
@@ -1349,7 +2094,9 @@ UI_HTML = """<!doctype html>
     document.getElementById('new-model-overlay').addEventListener('click', (event) => {
       if (event.target.id === 'new-model-overlay') closeNewModel();
     });
-    loadAll().catch(err => setMessage('加载失败：' + err.message, 'bad'));
+    loadAll().catch(err => {
+      document.getElementById('chain-grid').innerHTML = '<div class="panel"><h2>加载失败</h2><p class="meta">' + escapeHtml(err.message) + '</p></div>';
+    });
   </script>
 </body>
 </html>
@@ -1532,6 +2279,221 @@ def proxy_failover_stats(path: str) -> dict[str, Any]:
             'depth2OrMore': 0,
             'unresolvedFailures': 0,
         },
+        'chainGroups': [],
+    }
+
+
+def reset_failover_stats() -> dict[str, Any]:
+    base_url = FAILOVER_STATS_URL.rsplit('/failover-stats', 1)[0]
+    url = f'{base_url}/admin/reset'
+    result = post_json(url, {}, timeout=5)
+    if result.get('ok') and isinstance(result.get('body'), dict):
+        return result.get('body')  # type: ignore[return-value]
+    return {
+        'ok': False,
+        'generatedAt': now_iso(),
+        'sourceUrl': url,
+        'error': result.get('error') or 'failover_stats_reset_unavailable',
+        'status': result.get('status', 0),
+    }
+
+
+def redis_cli(*args: str, timeout: float = 3.0) -> dict[str, Any]:
+    command = [DOCKER_BIN, 'exec', REDIS_CONTAINER, 'redis-cli', '--raw', *args]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        return {'ok': False, 'error': f'docker_not_found:{exc}'}
+    except subprocess.TimeoutExpired:
+        return {'ok': False, 'error': f'redis_cli_timeout:{timeout}s'}
+    except Exception as exc:
+        return {'ok': False, 'error': str(exc)}
+    if completed.returncode != 0:
+        error = (completed.stderr or completed.stdout or '').strip()
+        return {'ok': False, 'error': error or f'redis_cli_failed:{completed.returncode}'}
+    return {'ok': True, 'stdout': completed.stdout}
+
+
+def parse_redis_json(raw: str) -> dict[str, Any] | None:
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def redis_cooldown_status(key: str) -> dict[str, Any]:
+    ttl_result = redis_cli('TTL', key)
+    if not ttl_result.get('ok'):
+        return {
+            'available': False,
+            'key': key,
+            'active': False,
+            'ttlSeconds': 0,
+            'error': ttl_result.get('error') or 'redis_ttl_failed',
+        }
+    lines = [line for line in str(ttl_result.get('stdout') or '').strip().splitlines() if line.strip()]
+    if not lines:
+        return {
+            'available': False,
+            'key': key,
+            'active': False,
+            'ttlSeconds': 0,
+            'error': 'invalid_ttl:',
+        }
+    try:
+        ttl = int(lines[-1])
+    except Exception:
+        return {
+            'available': False,
+            'key': key,
+            'active': False,
+            'ttlSeconds': 0,
+            'error': f'invalid_ttl:{lines[-1]}',
+        }
+
+    active = ttl != -2
+    status: dict[str, Any] = {
+        'available': True,
+        'key': key,
+        'active': active,
+        'ttlSeconds': ttl if ttl > 0 else 0,
+        'persistent': ttl == -1,
+        'rawTtl': ttl,
+    }
+    if not active:
+        return status
+
+    value_result = redis_cli('GET', key)
+    if value_result.get('ok'):
+        raw = str(value_result.get('stdout') or '').strip()
+        parsed = parse_redis_json(raw)
+        if parsed:
+            status['detail'] = str(parsed.get('exception_received') or parsed.get('detail') or '')[:300]
+            status['statusCode'] = str(parsed.get('status_code') or '')
+            status['cooldownTime'] = parsed.get('cooldown_time')
+        elif raw:
+            status['detail'] = raw[:300]
+    else:
+        status['readError'] = value_result.get('error') or 'redis_get_failed'
+    return status
+
+
+def redis_probe_status(key: str) -> dict[str, Any]:
+    result = redis_cli('GET', key)
+    if not result.get('ok'):
+        return {
+            'available': False,
+            'key': key,
+            'ok': False,
+            'state': 'unavailable',
+            'error': result.get('error') or 'redis_get_failed',
+        }
+    raw = str(result.get('stdout') or '').strip()
+    if not raw:
+        return {
+            'available': False,
+            'key': key,
+            'ok': False,
+            'state': 'missing',
+        }
+    parsed = parse_redis_json(raw)
+    if not parsed:
+        return {
+            'available': True,
+            'key': key,
+            'ok': False,
+            'state': 'malformed',
+            'detail': raw[:300],
+        }
+    state = str(parsed.get('state') or '').strip().lower()
+    ok = bool(parsed.get('ok'))
+    return {
+        'available': True,
+        'key': key,
+        'ok': ok,
+        'state': state or ('healthy' if ok else 'unknown'),
+        'detail': str(parsed.get('detail') or '')[:500],
+        'checkedAt': str(parsed.get('checkedAt') or ''),
+        'deploymentId': str(parsed.get('deploymentId') or ''),
+        'cooldownKey': str(parsed.get('cooldownKey') or ''),
+        'consecutiveSuccesses': safe_int(parsed.get('consecutiveSuccesses') or 0, default=0),
+    }
+
+
+def runtime_chain_state(cooldown: dict[str, Any], probe: dict[str, Any]) -> str:
+    probe_state = str(probe.get('state') or '').lower()
+    if cooldown.get('active'):
+        if probe_state == 'probing':
+            return 'recovering'
+        if probe_state == 'unhealthy':
+            return 'unhealthy'
+        return 'cooldown'
+    if probe_state in {'healthy', 'idle', 'unhealthy', 'missing', 'malformed', 'unavailable'}:
+        return probe_state
+    return 'unknown'
+
+
+def build_runtime_status() -> dict[str, Any]:
+    generated_at = now_iso()
+    ping = redis_cli('PING')
+    redis_ok = bool(ping.get('ok') and str(ping.get('stdout') or '').strip() == 'PONG')
+    redis_info = {
+        'ok': redis_ok,
+        'container': REDIS_CONTAINER,
+    }
+    if not redis_ok:
+        redis_info['error'] = ping.get('error') or str(ping.get('stdout') or '').strip() or 'redis_unavailable'
+
+    chains = []
+    for chain in PRODUCTION_CHAINS:
+        cooldown_key = str(chain.get('cooldownKey') or '')
+        status_key = str(chain.get('statusKey') or '')
+        if redis_ok:
+            cooldown = redis_cooldown_status(cooldown_key)
+            probe = redis_probe_status(status_key)
+        else:
+            error = str(redis_info.get('error') or 'redis_unavailable')
+            cooldown = {
+                'available': False,
+                'key': cooldown_key,
+                'active': False,
+                'ttlSeconds': 0,
+                'error': error,
+            }
+            probe = {
+                'available': False,
+                'key': status_key,
+                'ok': False,
+                'state': 'unavailable',
+                'error': error,
+            }
+        item = dict(chain)
+        item['cooldown'] = cooldown
+        item['probe'] = probe
+        item['state'] = runtime_chain_state(cooldown, probe)
+        chains.append(item)
+
+    return {
+        'generatedAt': generated_at,
+        'redis': redis_info,
+        'chains': chains,
     }
 
 
@@ -1552,7 +2514,7 @@ def summarize_probe_error(error: Any) -> str:
     return str(error)[:300]
 
 
-def test_upstream_connection(model_name: str, base_url: str, api_key: str) -> dict[str, Any]:
+def test_upstream_connection(model_name: str, base_url: str, api_key: str, backend_model: str = 'openai/gpt-5.4') -> dict[str, Any]:
     model_name = model_name.strip()
     base_url = trim_trailing_slash(base_url.strip())
     api_key = api_key.strip()
@@ -1582,7 +2544,7 @@ def test_upstream_connection(model_name: str, base_url: str, api_key: str) -> di
         }
 
     fallback_payload = {
-        'model': 'openai/gpt-5.5',
+        'model': backend_model or 'openai/gpt-5.4',
         'messages': [
             {'role': 'user', 'content': 'ping'}
         ],
@@ -1654,6 +2616,51 @@ def get_litellm_config() -> dict[str, Any]:
     return load_yaml(LITELLM_CONFIG_PATH)
 
 
+def normalize_entry_model(entry_model: str | None) -> str:
+    raw = str(entry_model or '').strip()
+    if not raw:
+        return DEFAULT_ENTRY_MODEL
+    normalized = raw.lower()
+    for chain in PRODUCTION_CHAINS:
+        chain_id = str(chain.get('id') or '').strip().lower()
+        chain_entry = str(chain.get('entryModel') or '').strip().lower()
+        if normalized in {chain_id, chain_entry}:
+            return str(chain.get('entryModel') or '').strip()
+    raise ValueError(f'invalid_entry_model:{raw}')
+
+
+def entry_chain_meta(entry_model: str) -> dict[str, Any]:
+    normalized = normalize_entry_model(entry_model)
+    for chain in PRODUCTION_CHAINS:
+        if str(chain.get('entryModel') or '').strip() == normalized:
+            return dict(chain)
+    return {
+        'id': normalized,
+        'label': normalized,
+        'owner': 'Gateway',
+        'entryModel': normalized,
+    }
+
+
+def entry_model_from_payload(payload: dict[str, Any]) -> str:
+    return normalize_entry_model(
+        str(payload.get('entryModel') or payload.get('modelFamily') or payload.get('chainId') or '').strip()
+    )
+
+
+def get_entry_backend_model(config: dict[str, Any], entry_model: str = DEFAULT_ENTRY_MODEL) -> str:
+    entry_model = normalize_entry_model(entry_model)
+    model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
+    for item in model_list:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get('model_name') or '').strip() != entry_model:
+            continue
+        params = item.get('litellm_params') if isinstance(item.get('litellm_params'), dict) else {}
+        return str(params.get('model') or '').strip()
+    return ''
+
+
 def parse_os_environ_key(expr: str) -> str:
     prefix = 'os.environ/'
     if expr.startswith(prefix):
@@ -1661,16 +2668,23 @@ def parse_os_environ_key(expr: str) -> str:
     return ''
 
 
-def get_dynamic_upstreams(config: dict[str, Any], env: dict[str, str]) -> dict[str, dict[str, str]]:
+def get_dynamic_upstreams(config: dict[str, Any], env: dict[str, str], entry_model: str = DEFAULT_ENTRY_MODEL) -> dict[str, dict[str, str]]:
+    entry_model = normalize_entry_model(entry_model)
     upstreams: dict[str, dict[str, str]] = {}
+    entry_backend_model = get_entry_backend_model(config, entry_model)
+    if not entry_backend_model:
+        return upstreams
     model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
     for item in model_list:
         if not isinstance(item, dict):
             continue
         model_name = str(item.get('model_name') or '').strip()
-        if not model_name or model_name == ENTRY_MODEL:
+        if not model_name or model_name == entry_model:
             continue
         params = item.get('litellm_params') if isinstance(item.get('litellm_params'), dict) else {}
+        backend_model = str(params.get('model') or '').strip()
+        if backend_model != entry_backend_model:
+            continue
         api_base_expr = str(params.get('api_base') or '')
         api_key_expr = str(params.get('api_key') or '')
         base_env_key = parse_os_environ_key(api_base_expr)
@@ -1728,9 +2742,13 @@ def get_upstream_fields(upstream_id: str, upstreams: dict[str, dict[str, str]]) 
     }
 
 
-def get_model_order(config: dict[str, Any]) -> dict[str, Any]:
+def get_model_order(config: dict[str, Any], entry_model: str = DEFAULT_ENTRY_MODEL) -> dict[str, Any]:
+    entry_model = normalize_entry_model(entry_model)
+    chain_meta = entry_chain_meta(entry_model)
     env = parse_env(ENV_PATH)
-    upstreams = get_dynamic_upstreams(config, env)
+    upstreams = get_dynamic_upstreams(config, env, entry_model)
+    entry_backend_model = get_entry_backend_model(config, entry_model)
+    scoped_model_names = {str(meta.get('model_name') or '') for meta in upstreams.values()}
     model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
     router_settings = config.get('router_settings') if isinstance(config.get('router_settings'), dict) else {}
     fallbacks = router_settings.get('fallbacks') if isinstance(router_settings.get('fallbacks'), list) else []
@@ -1742,13 +2760,15 @@ def get_model_order(config: dict[str, Any]) -> dict[str, Any]:
         name = str(item.get('model_name') or '').strip()
         if not name:
             continue
+        if name != entry_model and name not in scoped_model_names:
+            continue
         model_map[name] = item
         params = item.get('litellm_params') if isinstance(item.get('litellm_params'), dict) else {}
         api_base = str(params.get('api_base') or '')
         upstream_id = get_upstream_id_from_api_base(api_base, upstreams)
         if upstream_id:
             name_to_upstream_id[name] = upstream_id
-    entry = model_map.get(ENTRY_MODEL, {})
+    entry = model_map.get(entry_model, {})
     entry_upstream_id = ''
     if isinstance(entry, dict):
         params = entry.get('litellm_params') if isinstance(entry.get('litellm_params'), dict) else {}
@@ -1758,13 +2778,13 @@ def get_model_order(config: dict[str, Any]) -> dict[str, Any]:
     for fb in fallbacks:
         if not isinstance(fb, dict):
             continue
-        chain = fb.get(ENTRY_MODEL)
+        chain = fb.get(entry_model)
         if isinstance(chain, list):
             fallback_chain = [str(name) for name in chain if str(name).strip()]
             break
     active_aliases = []
     if entry_upstream_id:
-        active_aliases.append(next((name for name, upstream_id in name_to_upstream_id.items() if upstream_id == entry_upstream_id and name != ENTRY_MODEL), ''))
+        active_aliases.append(next((name for name, upstream_id in name_to_upstream_id.items() if upstream_id == entry_upstream_id and name != entry_model), ''))
     active_aliases.extend(fallback_chain)
     active_aliases = [name for name in active_aliases if name]
     ordered_models = []
@@ -1784,7 +2804,7 @@ def get_model_order(config: dict[str, Any]) -> dict[str, Any]:
             **get_upstream_fields(upstream_id, upstreams),
         })
     for upstream_id, meta in upstreams.items():
-        name = next((model_name for model_name, mapped_upstream in name_to_upstream_id.items() if mapped_upstream == upstream_id and model_name != ENTRY_MODEL), '')
+        name = next((model_name for model_name, mapped_upstream in name_to_upstream_id.items() if mapped_upstream == upstream_id and model_name != entry_model), '')
         if not name or name in {item['model_name'] for item in ordered_models}:
             continue
         item = model_map.get(name)
@@ -1801,7 +2821,12 @@ def get_model_order(config: dict[str, Any]) -> dict[str, Any]:
             **get_upstream_fields(upstream_id, upstreams),
         })
     return {
-        'entryModel': ENTRY_MODEL,
+        'entryModel': entry_model,
+        'chainId': str(chain_meta.get('id') or entry_model),
+        'label': str(chain_meta.get('label') or entry_model),
+        'owner': str(chain_meta.get('owner') or 'Gateway'),
+        'backendModel': entry_backend_model,
+        'available': bool(entry_backend_model),
         'entryUpstreamId': entry_upstream_id,
         'fallbackChain': fallback_chain,
         'models': ordered_models,
@@ -1822,15 +2847,34 @@ def clone_params_from_model(config: dict[str, Any], model_name: str) -> dict[str
     raise ValueError(f'model_not_found:{model_name}')
 
 
-def get_model_name_by_upstream_id(config: dict[str, Any], upstream_id: str) -> str:
+def get_all_model_orders(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return [get_model_order(config, entry_model) for entry_model in EDITABLE_ENTRY_MODELS]
+
+
+def build_router_config_payload(config: dict[str, Any], litellm_healthy: bool | None = None) -> dict[str, Any]:
+    default_order = get_model_order(config, DEFAULT_ENTRY_MODEL)
+    return {
+        **default_order,
+        'ok': True,
+        'generatedAt': now_iso(),
+        'configPath': str(LITELLM_CONFIG_PATH),
+        'composePath': str(LITELLM_COMPOSE_PATH),
+        'litellmHealthy': bool(litellm_healthy) if litellm_healthy is not None else bool(fetch_json(LITELLM_HEALTH_URL, timeout=5).get('ok')),
+        'chains': get_all_model_orders(config),
+    }
+
+
+def get_model_name_by_upstream_id(config: dict[str, Any], upstream_id: str, entry_model: str = DEFAULT_ENTRY_MODEL) -> str:
+    entry_model = normalize_entry_model(entry_model)
     env = parse_env(ENV_PATH)
-    upstreams = get_dynamic_upstreams(config, env)
+    upstreams = get_dynamic_upstreams(config, env, entry_model)
+    scoped_model_names = {str(meta.get('model_name') or '') for meta in upstreams.values()}
     model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
     for item in model_list:
         if not isinstance(item, dict):
             continue
         name = str(item.get('model_name') or '').strip()
-        if name == ENTRY_MODEL:
+        if name == entry_model or name not in scoped_model_names:
             continue
         params = item.get('litellm_params') if isinstance(item.get('litellm_params'), dict) else {}
         api_base = str(params.get('api_base') or '')
@@ -1839,12 +2883,13 @@ def get_model_name_by_upstream_id(config: dict[str, Any], upstream_id: str) -> s
     raise ValueError(f'upstream_not_found:{upstream_id}')
 
 
-def write_model_order(entry_upstream_id: str, fallback_upstream_ids: list[str]) -> dict[str, Any]:
+def write_model_order(entry_upstream_id: str, fallback_upstream_ids: list[str], entry_model: str = DEFAULT_ENTRY_MODEL) -> dict[str, Any]:
+    entry_model = normalize_entry_model(entry_model)
     config = get_litellm_config()
     if not config:
         raise ValueError('config_unavailable')
     env = parse_env(ENV_PATH)
-    upstreams = get_dynamic_upstreams(config, env)
+    upstreams = get_dynamic_upstreams(config, env, entry_model)
     if entry_upstream_id not in upstreams:
         raise ValueError('invalid_entry_upstream_id')
     invalid = [name for name in fallback_upstream_ids if name not in upstreams or name == entry_upstream_id]
@@ -1852,8 +2897,8 @@ def write_model_order(entry_upstream_id: str, fallback_upstream_ids: list[str]) 
         raise ValueError('invalid_fallback_chain')
     if len(set(fallback_upstream_ids)) != len(fallback_upstream_ids):
         raise ValueError('duplicate_fallback_chain')
-    entry_env_model = get_model_name_by_upstream_id(config, entry_upstream_id)
-    fallback_chain = [get_model_name_by_upstream_id(config, upstream_id) for upstream_id in fallback_upstream_ids]
+    entry_env_model = get_model_name_by_upstream_id(config, entry_upstream_id, entry_model)
+    fallback_chain = [get_model_name_by_upstream_id(config, upstream_id, entry_model) for upstream_id in fallback_upstream_ids]
     model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
     entry_params = clone_params_from_model(config, entry_env_model)
     updated_model_list = []
@@ -1861,7 +2906,7 @@ def write_model_order(entry_upstream_id: str, fallback_upstream_ids: list[str]) 
         if not isinstance(item, dict):
             updated_model_list.append(item)
             continue
-        if str(item.get('model_name') or '').strip() == ENTRY_MODEL:
+        if str(item.get('model_name') or '').strip() == entry_model:
             updated_item = json.loads(json.dumps(item))
             updated_item['litellm_params'] = entry_params
             updated_model_list.append(updated_item)
@@ -1873,20 +2918,21 @@ def write_model_order(entry_upstream_id: str, fallback_upstream_ids: list[str]) 
     replaced = False
     next_fallbacks = []
     for item in fallbacks:
-        if isinstance(item, dict) and ENTRY_MODEL in item:
-            next_fallbacks.append({ENTRY_MODEL: fallback_chain})
+        if isinstance(item, dict) and entry_model in item:
+            next_fallbacks.append({entry_model: fallback_chain})
             replaced = True
         else:
             next_fallbacks.append(item)
     if not replaced:
-        next_fallbacks.append({ENTRY_MODEL: fallback_chain})
+        next_fallbacks.append({entry_model: fallback_chain})
     router_settings['fallbacks'] = next_fallbacks
     config['router_settings'] = router_settings
     dump_yaml(LITELLM_CONFIG_PATH, config)
-    return get_model_order(config)
+    return get_model_order(config, entry_model)
 
 
-def update_model_settings(upstream_id: str, new_model_name: str, base_url: str, api_key: str) -> dict[str, Any]:
+def update_model_settings(upstream_id: str, new_model_name: str, base_url: str, api_key: str, entry_model: str = DEFAULT_ENTRY_MODEL) -> dict[str, Any]:
+    entry_model = normalize_entry_model(entry_model)
     upstream_id = upstream_id.strip().lower()
     new_model_name = new_model_name.strip()
     base_url = base_url.strip()
@@ -1897,10 +2943,12 @@ def update_model_settings(upstream_id: str, new_model_name: str, base_url: str, 
     if not config:
         raise ValueError('config_unavailable')
     env = parse_env(ENV_PATH)
-    upstreams = get_dynamic_upstreams(config, env)
+    upstreams = get_dynamic_upstreams(config, env, entry_model)
     if upstream_id not in upstreams:
         raise ValueError('invalid_upstream_id')
-    current_model_name = get_model_name_by_upstream_id(config, upstream_id)
+    current_model_name = get_model_name_by_upstream_id(config, upstream_id, entry_model)
+    if current_model_name == entry_model and new_model_name != current_model_name:
+        raise ValueError('cannot_rename_entry_model')
     model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
     for item in model_list:
         if not isinstance(item, dict):
@@ -1930,14 +2978,10 @@ def update_model_settings(upstream_id: str, new_model_name: str, base_url: str, 
             continue
         updated_item = {}
         for key, value in item.items():
-            next_key = key
-            if key == current_model_name:
-                next_key = new_model_name
-            if isinstance(value, list):
-                updated_value = [new_model_name if str(entry).strip() == current_model_name else entry for entry in value]
+            if key == entry_model and isinstance(value, list):
+                updated_item[key] = [new_model_name if str(entry).strip() == current_model_name else entry for entry in value]
             else:
-                updated_value = value
-            updated_item[next_key] = updated_value
+                updated_item[key] = value
         next_fallbacks.append(updated_item)
     router_settings['fallbacks'] = next_fallbacks
     config['router_settings'] = router_settings
@@ -1950,7 +2994,7 @@ def update_model_settings(upstream_id: str, new_model_name: str, base_url: str, 
     for item in model_list:
         if not isinstance(item, dict):
             continue
-        if str(item.get('model_name') or '').strip() == ENTRY_MODEL:
+        if str(item.get('model_name') or '').strip() == entry_model:
             params = item.get('litellm_params') if isinstance(item.get('litellm_params'), dict) else {}
             api_base_expr = str(params.get('api_base') or '')
             current_upstream = get_upstream_id_from_api_base(api_base_expr, upstreams)
@@ -1958,7 +3002,7 @@ def update_model_settings(upstream_id: str, new_model_name: str, base_url: str, 
                 item['litellm_params'] = entry_params
             break
     dump_yaml(LITELLM_CONFIG_PATH, config)
-    return get_model_order(config)
+    return get_model_order(config, entry_model)
 
 
 def next_available_env_prefix(env: dict[str, str], preferred_label: str) -> str:
@@ -1973,7 +3017,8 @@ def next_available_env_prefix(env: dict[str, str], preferred_label: str) -> str:
     return candidate
 
 
-def add_new_model(model_name: str, base_url: str, api_key: str) -> dict[str, Any]:
+def add_new_model(model_name: str, base_url: str, api_key: str, entry_model: str = DEFAULT_ENTRY_MODEL) -> dict[str, Any]:
+    entry_model = normalize_entry_model(entry_model)
     model_name = model_name.strip()
     base_url = base_url.strip()
     api_key = api_key.strip()
@@ -1982,6 +3027,9 @@ def add_new_model(model_name: str, base_url: str, api_key: str) -> dict[str, Any
     config = get_litellm_config()
     if not config:
         raise ValueError('config_unavailable')
+    backend_model = get_entry_backend_model(config, entry_model)
+    if not backend_model:
+        raise ValueError('entry_model_not_found')
     env = parse_env(ENV_PATH)
     model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
     for item in model_list:
@@ -1990,13 +3038,16 @@ def add_new_model(model_name: str, base_url: str, api_key: str) -> dict[str, Any
         if str(item.get('model_name') or '').strip() == model_name:
             raise ValueError('duplicate_model_name')
     env_prefix = next_available_env_prefix(env, model_name)
+    params = clone_params_from_model(config, entry_model)
+    params['model'] = backend_model
+    params['api_base'] = f'os.environ/{env_prefix}_UPSTREAM_BASE_URL'
+    params['api_key'] = f'os.environ/{env_prefix}_UPSTREAM_API_KEY'
     new_item = {
         'model_name': model_name,
-        'litellm_params': {
-            'model': 'openai/gpt-5.5',
-            'api_base': f'os.environ/{env_prefix}_UPSTREAM_BASE_URL',
-            'api_key': f'os.environ/{env_prefix}_UPSTREAM_API_KEY',
+        'model_info': {
+            'id': model_name,
         },
+        'litellm_params': params,
     }
     model_list.append(new_item)
     config['model_list'] = model_list
@@ -2005,15 +3056,30 @@ def add_new_model(model_name: str, base_url: str, api_key: str) -> dict[str, Any
         f'{env_prefix}_UPSTREAM_BASE_URL': base_url,
         f'{env_prefix}_UPSTREAM_API_KEY': api_key,
     })
-    return get_model_order(config)
+    return get_model_order(config, entry_model)
 
 
-def delete_model(upstream_id: str) -> dict[str, Any]:
+def model_env_keys_in_use(config: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    model_list = config.get('model_list') if isinstance(config.get('model_list'), list) else []
+    for item in model_list:
+        if not isinstance(item, dict):
+            continue
+        params = item.get('litellm_params') if isinstance(item.get('litellm_params'), dict) else {}
+        for field in ('api_base', 'api_key'):
+            key = parse_os_environ_key(str(params.get(field) or ''))
+            if key:
+                keys.add(key)
+    return keys
+
+
+def delete_model(upstream_id: str, entry_model: str = DEFAULT_ENTRY_MODEL) -> dict[str, Any]:
+    entry_model = normalize_entry_model(entry_model)
     upstream_id = upstream_id.strip().lower()
     config = get_litellm_config()
     if not config:
         raise ValueError('config_unavailable')
-    order = get_model_order(config)
+    order = get_model_order(config, entry_model)
     target = next((item for item in order.get('models') or [] if str(item.get('upstreamId') or '') == upstream_id), None)
     if not target:
         raise ValueError('invalid_upstream_id')
@@ -2039,9 +3105,9 @@ def delete_model(upstream_id: str) -> dict[str, Any]:
             continue
         updated_item = {}
         for key, value in item.items():
-            if key == target_model_name:
+            if key == entry_model and key == target_model_name:
                 continue
-            if isinstance(value, list):
+            if key == entry_model and isinstance(value, list):
                 updated_item[key] = [entry for entry in value if str(entry).strip() != target_model_name]
             else:
                 updated_item[key] = value
@@ -2049,16 +3115,20 @@ def delete_model(upstream_id: str) -> dict[str, Any]:
     router_settings['fallbacks'] = next_fallbacks
     config['router_settings'] = router_settings
     dump_yaml(LITELLM_CONFIG_PATH, config)
+    remaining_env_keys = model_env_keys_in_use(config)
     remove_env_keys(ENV_PATH, [
-        str(target.get('baseUrlEnvKey') or ''),
-        str(target.get('apiKeyEnvKey') or ''),
+        key for key in [
+            str(target.get('baseUrlEnvKey') or ''),
+            str(target.get('apiKeyEnvKey') or ''),
+        ]
+        if key and key not in remaining_env_keys
     ])
-    return get_model_order(config)
+    return get_model_order(config, entry_model)
 
 
 def restart_litellm() -> dict[str, Any]:
     completed = subprocess.run(
-        [DOCKER_BIN, 'restart', 'litellm-router-prod'],
+        [DOCKER_BIN, 'restart', LITELLM_RESTART_CONTAINER],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -2074,6 +3144,7 @@ def restart_litellm() -> dict[str, Any]:
     return {
         'ok': completed.returncode == 0 and bool(health.get('ok')),
         'returncode': completed.returncode,
+        'container': LITELLM_RESTART_CONTAINER,
         'stdout': completed.stdout.strip(),
         'stderr': completed.stderr.strip(),
         'health': health,
@@ -2084,7 +3155,12 @@ def build_status() -> dict[str, Any]:
     env = parse_env(ENV_PATH)
     watcher_state = load_json(WATCHER_STATE_PATH)
     chrome = sync.get_chrome_account()
-    profiles = sync.load_profiles()
+    profile_load_error = ''
+    try:
+        profiles = sync.load_profiles()
+    except (Exception, SystemExit) as exc:
+        profiles = {}
+        profile_load_error = str(exc)
 
     chrome_email = str(chrome.get('email') or '').strip() if chrome.get('ok') else ''
     strict_match = find_profile_by_email(profiles, chrome_email) if chrome_email else None
@@ -2105,7 +3181,7 @@ def build_status() -> dict[str, Any]:
             'selectionSource': resolved_source,
             'accessFingerprint': token_fingerprint(str(resolved_profile.get('access') or '').strip()),
         }
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         resolved = {
             'profileId': '',
             'email': '',
@@ -2124,11 +3200,21 @@ def build_status() -> dict[str, Any]:
     env_plan_type = env.get('OAUTH_UPSTREAM_PLAN_TYPE', '')
     env_expires = env.get('OAUTH_UPSTREAM_EXPIRES', '')
 
-    quota = quota_mod.fetch_quota(env_oauth_access, env_account_id) if env_oauth_access else {
-        'ok': False,
-        'status': 0,
-        'error': 'missing_env_oauth_access_token',
-    }
+    if env_oauth_access:
+        try:
+            quota = quota_mod.fetch_quota(env_oauth_access, env_account_id)
+        except (Exception, SystemExit) as exc:
+            quota = {
+                'ok': False,
+                'status': 0,
+                'error': str(exc),
+            }
+    else:
+        quota = {
+            'ok': False,
+            'status': 0,
+            'error': 'missing_env_oauth_access_token',
+        }
 
     litellm_health = fetch_json(LITELLM_HEALTH_URL, timeout=5)
 
@@ -2179,6 +3265,7 @@ def build_status() -> dict[str, Any]:
         'litellmHealthy': bool(litellm_health.get('ok')),
     }
     summary['text'] = format_summary_text(summary)
+    runtime = build_runtime_status()
 
     return {
         'ok': True,
@@ -2199,6 +3286,7 @@ def build_status() -> dict[str, Any]:
             'strictEmailMatchProfile': strict_match_dict,
             'resolvedProfile': resolved,
             'candidateProfileCount': len(list_candidate_profiles(profiles)),
+            'profileLoadError': profile_load_error,
         },
         'litellmBinding': env_binding,
         'watcher': watcher_state,
@@ -2207,6 +3295,7 @@ def build_status() -> dict[str, Any]:
             'healthUrl': LITELLM_HEALTH_URL,
             'health': litellm_health,
         },
+        'runtime': runtime,
         'consistency': consistency,
         'summary': summary,
     }
@@ -2240,34 +3329,39 @@ class Handler(BaseHTTPRequestHandler):
         parsed = json.loads(raw.decode('utf-8'))
         return parsed if isinstance(parsed, dict) else {}
 
+    def _query_params(self) -> dict[str, list[str]]:
+        return urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+
+    def _path_only(self) -> str:
+        return urllib.parse.urlsplit(self.path).path
+
     def do_GET(self) -> None:
-        if self.path == '/':
+        path = self._path_only()
+        if path == '/':
             self._send_html(UI_HTML)
             return
-        if self.path.startswith('/failover-stats'):
+        if path == '/failover-stats':
             self._send_json(proxy_failover_stats(self.path))
             return
-        if self.path == '/status':
+        if path == '/status':
             self._send_json(build_status())
             return
-        if self.path == '/router-config':
+        if path == '/router-config':
             config = get_litellm_config()
-            order = get_model_order(config)
             status = build_status()
-            self._send_json({
-                'ok': True,
-                'generatedAt': now_iso(),
-                'configPath': str(LITELLM_CONFIG_PATH),
-                'composePath': str(LITELLM_COMPOSE_PATH),
-                'litellmHealthy': bool(status.get('litellm', {}).get('health', {}).get('ok')),
-                **order,
-            })
+            payload = build_router_config_payload(config, bool(status.get('litellm', {}).get('health', {}).get('ok')))
+            params = self._query_params()
+            requested = (params.get('entryModel') or params.get('modelFamily') or params.get('chainId') or [''])[0]
+            if requested:
+                order = get_model_order(config, requested)
+                payload.update(order)
+            self._send_json(payload)
             return
-        if self.path == '/summary':
+        if path == '/summary':
             status = build_status()
             self._send_json(status.get('summary') if isinstance(status.get('summary'), dict) else {'ok': False, 'error': 'summary_unavailable'})
             return
-        if self.path == '/summary.txt':
+        if path == '/summary.txt':
             status = build_status()
             text = str(((status.get('summary') or {}).get('text')) or '')
             body = (text + '\n').encode('utf-8')
@@ -2277,25 +3371,32 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == '/healthz':
+        if path == '/healthz':
             status = build_status()
             ok = bool(status.get('litellm', {}).get('health', {}).get('ok'))
             self._send_json({'ok': ok, 'generatedAt': status.get('generatedAt'), 'shouldResyncLiteLLM': status.get('consistency', {}).get('shouldResyncLiteLLM')}, 200 if ok else 503)
             return
-        if self.path == '/quota':
+        if path == '/quota':
             status = build_status()
             self._send_json(status.get('quota') if isinstance(status.get('quota'), dict) else {'ok': False, 'error': 'quota_unavailable'})
             return
         self._send_json({'ok': False, 'error': 'not_found', 'path': self.path}, 404)
 
     def do_POST(self) -> None:
-        if self.path == '/router-config/model/test':
+        path = self._path_only()
+        if path == '/failover-stats/reset':
+            result = reset_failover_stats()
+            self._send_json(result, 200 if result.get('ok') else 500)
+            return
+        if path == '/router-config/model/test':
             try:
                 payload = self._read_json_body()
+                entry_model = entry_model_from_payload(payload)
                 model_name = str(payload.get('modelName') or '').strip()
                 base_url = str(payload.get('baseUrl') or '').strip()
                 api_key = str(payload.get('apiKey') or '').strip()
-                probe = test_upstream_connection(model_name, base_url, api_key)
+                backend_model = get_entry_backend_model(get_litellm_config(), entry_model) or f'openai/{entry_model}'
+                probe = test_upstream_connection(model_name, base_url, api_key, backend_model)
                 self._send_json({
                     'ok': True,
                     'message': 'model_probe_ok',
@@ -2304,11 +3405,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({'ok': False, 'error': str(exc)}, 400)
             return
-        if self.path == '/router-config/model/delete':
+        if path == '/router-config/model/delete':
             try:
                 payload = self._read_json_body()
+                entry_model = entry_model_from_payload(payload)
                 upstream_id = str(payload.get('upstreamId') or '').strip().lower()
-                order = delete_model(upstream_id)
+                order = delete_model(upstream_id, entry_model)
                 restart = restart_litellm()
                 status_code = 200 if restart.get('ok') else 500
                 self._send_json({
@@ -2320,13 +3422,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({'ok': False, 'error': str(exc)}, 400)
             return
-        if self.path == '/router-config/model/new':
+        if path == '/router-config/model/new':
             try:
                 payload = self._read_json_body()
+                entry_model = entry_model_from_payload(payload)
                 model_name = str(payload.get('modelName') or '').strip()
                 base_url = str(payload.get('baseUrl') or '').strip()
                 api_key = str(payload.get('apiKey') or '').strip()
-                order = add_new_model(model_name, base_url, api_key)
+                order = add_new_model(model_name, base_url, api_key, entry_model)
                 restart = restart_litellm()
                 status_code = 200 if restart.get('ok') else 500
                 self._send_json({
@@ -2338,14 +3441,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({'ok': False, 'error': str(exc)}, 400)
             return
-        if self.path == '/router-config/model':
+        if path == '/router-config/model':
             try:
                 payload = self._read_json_body()
+                entry_model = entry_model_from_payload(payload)
                 upstream_id = str(payload.get('upstreamId') or '').strip().lower()
                 model_name = str(payload.get('modelName') or '').strip()
                 base_url = str(payload.get('baseUrl') or '').strip()
                 api_key = str(payload.get('apiKey') or '').strip()
-                order = update_model_settings(upstream_id, model_name, base_url, api_key)
+                order = update_model_settings(upstream_id, model_name, base_url, api_key, entry_model)
                 restart = restart_litellm()
                 status_code = 200 if restart.get('ok') else 500
                 self._send_json({
@@ -2357,17 +3461,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({'ok': False, 'error': str(exc)}, 400)
             return
-        if self.path != '/router-config':
+        if path != '/router-config':
             self._send_json({'ok': False, 'error': 'not_found', 'path': self.path}, 404)
             return
         try:
             payload = self._read_json_body()
+            entry_model = entry_model_from_payload(payload)
             entry_upstream_id = str(payload.get('entryUpstreamId') or '').strip().lower()
             fallback_chain = payload.get('fallbackChain')
             if not isinstance(fallback_chain, list):
                 raise ValueError('fallback_chain_must_be_list')
             fallback_chain = [str(item).strip().lower() for item in fallback_chain if str(item).strip()]
-            order = write_model_order(entry_upstream_id, fallback_chain)
+            order = write_model_order(entry_upstream_id, fallback_chain, entry_model)
             restart = restart_litellm()
             status_code = 200 if restart.get('ok') else 500
             self._send_json({

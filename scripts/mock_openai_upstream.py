@@ -29,7 +29,7 @@ def response_payload() -> dict[str, Any]:
         "id": f"chatcmpl-{MOCK_NAME}",
         "object": "chat.completion",
         "created": 0,
-        "model": "gpt-5.5",
+        "model": "gpt-5.4",
         "choices": [
             {
                 "index": 0,
@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "name": MOCK_NAME, "status": read_status()})
             return
         if self.path == "/v1/models":
-            self._send_json({"object": "list", "data": [{"id": "gpt-5.5", "object": "model", "owned_by": MOCK_NAME}]})
+            self._send_json({"object": "list", "data": [{"id": "gpt-5.4", "object": "model", "owned_by": MOCK_NAME}]})
             return
         self._send_json({"ok": False, "error": "not_found", "path": self.path}, 404)
 

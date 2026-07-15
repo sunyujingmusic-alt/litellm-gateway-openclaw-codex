@@ -1,0 +1,56 @@
+model_list:
+  - model_name: gpt-5.4-primary-probe-test
+    litellm_params:
+      model: openai/gpt-5.4
+      api_base: os.environ/PRIMARY_UPSTREAM_BASE_URL
+      api_key: os.environ/PRIMARY_UPSTREAM_API_KEY
+      timeout: 5
+      stream_timeout: 5
+      num_retries: 0
+      cooldown_time: 120
+    model_info:
+      id: probe-primary
+
+  - model_name: gpt-5.4-primary-probe-test-fallback
+    litellm_params:
+      model: openai/gpt-5.4
+      api_base: os.environ/FALLBACK_UPSTREAM_BASE_URL
+      api_key: os.environ/FALLBACK_UPSTREAM_API_KEY
+      timeout: 5
+      stream_timeout: 5
+      num_retries: 0
+      cooldown_time: 120
+    model_info:
+      id: probe-fallback
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 0
+  timeout: 10
+  stream_timeout: 10
+  max_fallbacks: 1
+  allowed_fails: 0
+  retry_policy:
+    BadRequestErrorRetries: 0
+    AuthenticationErrorRetries: 0
+    TimeoutErrorRetries: 0
+    RateLimitErrorRetries: 0
+    ContentPolicyViolationErrorRetries: 0
+  allowed_fails_policy:
+    BadRequestErrorAllowedFails: 1000
+    AuthenticationErrorAllowedFails: 0
+    TimeoutErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 0
+    ContentPolicyViolationErrorAllowedFails: 1000
+  cooldown_time: 120
+  redis_url: os.environ/TEST_REDIS_URL
+  fallbacks:
+    - gpt-5.4-primary-probe-test:
+        - gpt-5.4-primary-probe-test-fallback
+
+general_settings:
+  master_key: os.environ/GATEWAY_API_KEY
+  drop_params: true
+
+litellm_settings:
+  set_verbose: false

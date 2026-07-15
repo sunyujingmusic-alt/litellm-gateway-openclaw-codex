@@ -1,0 +1,110 @@
+name: litellm-gateway-primary-probe-test
+
+services:
+  redis-probe-test:
+    image: redis:7-alpine
+    container_name: litellm-router-primary-probe-test-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - no
+    ports:
+      - "127.0.0.1:6391:6379"
+
+  litellm-probe-test:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm-router-primary-probe-test
+    restart: unless-stopped
+    depends_on:
+      - redis-probe-test
+      - mock-primary-probe-test
+      - mock-fallback-probe-test
+    environment:
+      TEST_REDIS_URL: redis://redis-probe-test:6379
+      GATEWAY_API_KEY: local-litellm-gateway
+      PRIMARY_UPSTREAM_BASE_URL: http://mock-primary-probe-test:8000/v1
+      PRIMARY_UPSTREAM_API_KEY: sk-mock-primary
+      FALLBACK_UPSTREAM_BASE_URL: http://mock-fallback-probe-test:8000/v1
+      FALLBACK_UPSTREAM_API_KEY: sk-mock-fallback
+      PRIMARY_PROBE_ADMIN_KEY: local-primary-probe-admin
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      no_proxy: ""
+      all_proxy: ""
+    entrypoint:
+      - python
+      - /app/primary_probe_litellm_entrypoint.py
+    command:
+      - --config
+      - /app/config.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    volumes:
+      - ./litellm/config.primary-probe-test.yaml:/app/config.yaml:ro
+      - ./scripts/primary_probe_litellm_entrypoint.py:/app/primary_probe_litellm_entrypoint.py:ro
+    ports:
+      - "127.0.0.1:4038:4000"
+
+  primary-probe-test:
+    image: python:3.13-alpine
+    container_name: litellm-router-primary-probe-test-probe
+    restart: unless-stopped
+    depends_on:
+      - redis-probe-test
+      - mock-primary-probe-test
+    environment:
+      REDIS_URL: redis://redis-probe-test:6379
+      PROBE_DEPLOYMENT_ID: probe-primary
+      PROBE_BASE_URL: http://mock-primary-probe-test:8000/v1
+      PROBE_API_KEY: sk-mock-primary
+      PROBE_INTERVAL_SECONDS: "2"
+      PROBE_SUCCESS_THRESHOLD: "2"
+      PROBE_TIMEOUT_SECONDS: "2"
+      PROBE_STATUS_KEY: gateway:health:probe-primary
+      PROBE_RECOVERY_URL: http://litellm-probe-test:4000/internal/router/cooldown/{deployment_id}
+      PROBE_RECOVERY_METHOD: DELETE
+      PROBE_RECOVERY_API_KEY: local-primary-probe-admin
+    command:
+      - python
+      - /app/upstream_health_probe.py
+    volumes:
+      - ./scripts/upstream_health_probe.py:/app/upstream_health_probe.py:ro
+
+  mock-primary-probe-test:
+    image: python:3.13-alpine
+    container_name: litellm-router-primary-probe-test-mock-primary
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: primary
+      MOCK_UPSTREAM_STATE_FILE: /app/state/primary.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/primary-probe-test:/app/state
+    ports:
+      - "127.0.0.1:4220:8000"
+
+  mock-fallback-probe-test:
+    image: python:3.13-alpine
+    container_name: litellm-router-primary-probe-test-mock-fallback
+    restart: unless-stopped
+    environment:
+      MOCK_UPSTREAM_NAME: fallback
+      MOCK_UPSTREAM_STATE_FILE: /app/state/fallback.status
+    command:
+      - python
+      - /app/mock_openai_upstream.py
+    volumes:
+      - ./scripts/mock_openai_upstream.py:/app/mock_openai_upstream.py:ro
+      - ./runtime/primary-probe-test:/app/state
+    ports:
+      - "127.0.0.1:4221:8000"

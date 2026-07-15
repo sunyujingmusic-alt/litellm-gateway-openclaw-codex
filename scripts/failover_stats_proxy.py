@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ DEFAULT_HOST = os.environ.get("FAILOVER_STATS_PROXY_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("FAILOVER_STATS_PROXY_PORT", "4130"))
 
 _LOCK = threading.Lock()
+SQLITE_RETRIES = 5
 
 
 def now_iso() -> str:
@@ -45,7 +47,8 @@ def safe_str(value: Any, limit: int = 400) -> str:
 def ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.execute("pragma busy_timeout=10000")
         conn.execute(
             """
             create table if not exists failover_events (
@@ -78,37 +81,49 @@ def write_event(event: dict[str, Any]) -> None:
     event.setdefault("ts", now_iso())
     raw = json.dumps(event, ensure_ascii=False, sort_keys=True)
     with _LOCK:
-        ensure_db()
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
         with JSONL_PATH.open("a", encoding="utf-8") as handle:
             handle.write(raw + "\n")
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                """
-                insert into failover_events (
-                  ts, event_type, call_id, requested_model, original_model_group,
-                  target_model_group, final_model_group, depth, max_fallbacks,
-                  success, exception_type, error, duration_ms, model_id, raw_json
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.get("ts", ""),
-                    event.get("eventType", ""),
-                    event.get("callId", ""),
-                    event.get("requestedModel", ""),
-                    event.get("originalModelGroup", ""),
-                    event.get("targetModelGroup", ""),
-                    event.get("finalModelGroup", ""),
-                    safe_int(event.get("depth")),
-                    safe_int(event.get("maxFallbacks")),
-                    1 if event.get("success") else 0,
-                    event.get("exceptionType", ""),
-                    event.get("error", ""),
-                    event.get("durationMs"),
-                    event.get("modelId", ""),
-                    raw,
-                ),
-            )
-            conn.commit()
+
+    last_exc: Exception | None = None
+    for attempt in range(SQLITE_RETRIES):
+        try:
+            ensure_db()
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                conn.execute("pragma busy_timeout=10000")
+                conn.execute(
+                    """
+                    insert into failover_events (
+                      ts, event_type, call_id, requested_model, original_model_group,
+                      target_model_group, final_model_group, depth, max_fallbacks,
+                      success, exception_type, error, duration_ms, model_id, raw_json
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.get("ts", ""),
+                        event.get("eventType", ""),
+                        event.get("callId", ""),
+                        event.get("requestedModel", ""),
+                        event.get("originalModelGroup", ""),
+                        event.get("targetModelGroup", ""),
+                        event.get("finalModelGroup", ""),
+                        safe_int(event.get("depth")),
+                        safe_int(event.get("maxFallbacks")),
+                        1 if event.get("success") else 0,
+                        event.get("exceptionType", ""),
+                        event.get("error", ""),
+                        event.get("durationMs"),
+                        event.get("modelId", ""),
+                        raw,
+                    ),
+                )
+                conn.commit()
+            return
+        except sqlite3.Error as exc:
+            last_exc = exc
+            time.sleep(0.05 * (attempt + 1))
+    print(f"failover-stats-proxy sqlite write skipped: {last_exc}", flush=True)
 
 
 def request_model(body: bytes) -> str:
@@ -188,7 +203,10 @@ class Handler(BaseHTTPRequestHandler):
                 "route": self.path,
                 "statusCode": status,
             }
-            write_event(event)
+            try:
+                write_event(event)
+            except Exception as exc:
+                print(f"failover-stats-proxy event write failed: {exc}", flush=True)
         self._send(status, response_headers, response_body)
 
     def do_GET(self) -> None:

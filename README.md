@@ -4,7 +4,7 @@ An opinionated LiteLLM gateway setup for running one public model behind multipl
 
 ## What It Does
 
-- Routes one public model name such as `gpt-5.5` to one or more upstream providers
+- Routes public model names such as Codex `gpt-5.5` and OpenClaw `gpt-5.4` to their own upstream fallback chains
 - Uses Redis to persist router cooldown state across container restarts
 - Supports primary and fallback upstream chains
 - Exposes a small local WebUI to inspect, reorder, enable, disable, edit, add, and delete upstreams
@@ -73,6 +73,7 @@ Core components:
   - second-backup-or-deeper requests
   - unresolved failures
   - per-depth and per-model chain summaries
+  - per-chain summaries when multiple public chains share the same gateway
 - HTTP endpoints for automation-friendly config updates
 
 ## Quick Start
@@ -129,7 +130,7 @@ Routing panel API:
 - `GET /status`
 - `GET /summary`
 - `GET /router-config`
-- `GET /failover-stats?window=5m|1h|24h|all`
+- `GET /failover-stats?window=5m|1h|24h|today|3d|7d|all`
 - `POST /router-config`
 - `POST /router-config/model`
 - `POST /router-config/model/delete`
@@ -137,7 +138,7 @@ Routing panel API:
 Failover stats API:
 
 - `GET /healthz`
-- `GET /failover-stats?window=5m|1h|24h|all`
+- `GET /failover-stats?window=5m|1h|24h|today|3d|7d|all`
 - `GET /vendor/vue.global.prod.js`
 
 `POST /admin/reset` exists only for isolated test runs and is disabled by default unless `FAILOVER_STATS_ALLOW_RESET=1` is set.
@@ -147,6 +148,7 @@ Failover stats API:
 - The public-facing model name is controlled in LiteLLM config
 - Upstream API credentials are read from environment variables
 - Redis is used for router state persistence
+- `FAILOVER_STATS_CHAINS` labels multiple chains for the dashboard, for example Codex on `gpt-5.5` and OpenClaw on `gpt-5.4`
 - Failover stats are stored under `logs/failover-stats-prod/`, which is intentionally ignored by git
 - The WebUI writes back to `litellm/config.yaml` and restarts the LiteLLM container
 
@@ -168,9 +170,9 @@ npm run test:e2e
 Run failover stats regression against the isolated mock stack:
 
 ```bash
-docker compose -f docker-compose.gpt-5.5-router-test.yml up -d
+docker compose -f docker-compose.gpt-5.4-router-test.yml up -d
 npm run test:failover-stats
-docker compose -f docker-compose.gpt-5.5-router-test.yml down
+docker compose -f docker-compose.gpt-5.4-router-test.yml down
 ```
 
 By default the panel E2E suite expects a separate local test copy of the project. You can override paths with:
