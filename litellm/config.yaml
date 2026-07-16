@@ -7,8 +7,8 @@ model_list:
     api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
     api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
     use_chat_completions_api: true
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
     drop_params: true
@@ -22,8 +22,8 @@ model_list:
     api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
     api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
     use_chat_completions_api: true
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
     drop_params: true
@@ -36,8 +36,8 @@ model_list:
     model: openai/gpt-5.5
     api_base: os.environ/POPCORN_UPSTREAM_BASE_URL
     api_key: os.environ/POPCORN_UPSTREAM_API_KEY
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
 - model_name: gpt-5.5-fsys
@@ -47,8 +47,60 @@ model_list:
     model: openai/gpt-5.5
     api_base: os.environ/FSYS_UPSTREAM_BASE_URL
     api_key: os.environ/FSYS_UPSTREAM_API_KEY
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
+    num_retries: 0
+    cooldown_time: 300
+- model_name: gpt-5.6-sol
+  model_info:
+    id: gpt-5.6-sol
+  litellm_params:
+    model: openai/gpt-5.6-sol
+    api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
+    api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
+    use_chat_completions_api: true
+    timeout: 300
+    stream_timeout: 300
+    num_retries: 0
+    cooldown_time: 300
+    drop_params: true
+    additional_drop_params:
+    - metadata
+- model_name: gpt-5.6-sol-fastCode
+  model_info:
+    id: gpt-5.6-sol-fastCode
+  litellm_params:
+    model: openai/gpt-5.6-sol
+    api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
+    api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
+    use_chat_completions_api: true
+    timeout: 300
+    stream_timeout: 300
+    num_retries: 0
+    cooldown_time: 300
+    drop_params: true
+    additional_drop_params:
+    - metadata
+- model_name: gpt-5.6-sol-popcorn
+  model_info:
+    id: gpt-5.6-sol-popcorn
+  litellm_params:
+    model: openai/gpt-5.6-sol
+    api_base: os.environ/POPCORN_UPSTREAM_BASE_URL
+    api_key: os.environ/POPCORN_UPSTREAM_API_KEY
+    timeout: 300
+    stream_timeout: 300
+    num_retries: 0
+    cooldown_time: 300
+- model_name: gpt-5.6-sol-fsys
+  model_info:
+    id: gpt-5.6-sol-fsys
+  litellm_params:
+    model: openai/gpt-5.6-sol
+    api_base: os.environ/FSYS_UPSTREAM_BASE_URL
+    api_key: os.environ/FSYS_UPSTREAM_API_KEY
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
 - model_name: gpt-5.4
@@ -59,8 +111,8 @@ model_list:
     api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
     api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
     use_chat_completions_api: true
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
     drop_params: true
@@ -74,8 +126,8 @@ model_list:
     api_base: os.environ/CLAUDECODER_UPSTREAM_BASE_URL
     api_key: os.environ/CLAUDECODER_UPSTREAM_API_KEY
     use_chat_completions_api: true
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
     drop_params: true
@@ -88,8 +140,8 @@ model_list:
     model: openai/gpt-5.4
     api_base: os.environ/POPCORN_UPSTREAM_BASE_URL
     api_key: os.environ/POPCORN_UPSTREAM_API_KEY
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
 - model_name: gpt-5.4-fsys
@@ -99,15 +151,15 @@ model_list:
     model: openai/gpt-5.4
     api_base: os.environ/FSYS_UPSTREAM_BASE_URL
     api_key: os.environ/FSYS_UPSTREAM_API_KEY
-    timeout: 45
-    stream_timeout: 45
+    timeout: 300
+    stream_timeout: 300
     num_retries: 0
     cooldown_time: 300
 router_settings:
   routing_strategy: simple-shuffle
   num_retries: 0
-  timeout: 75
-  stream_timeout: 75
+  timeout: 300
+  stream_timeout: 300
   max_fallbacks: 2
   allowed_fails: 0
   retry_policy:
@@ -128,6 +180,9 @@ router_settings:
   - gpt-5.5:
     - gpt-5.5-popcorn
     - gpt-5.5-fsys
+  - gpt-5.6-sol:
+    - gpt-5.6-sol-popcorn
+    - gpt-5.6-sol-fsys
   - gpt-5.4:
     - gpt-5.4-popcorn
     - gpt-5.4-fsys

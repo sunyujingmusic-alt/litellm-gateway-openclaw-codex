@@ -52,6 +52,14 @@ DOCKER_BIN = shutil.which('docker') or '/opt/homebrew/bin/docker'
 
 DEFAULT_PRODUCTION_CHAINS = [
     {
+        'id': 'gpt-5.6-sol',
+        'label': 'OpenClaw gpt-5.6-sol',
+        'owner': 'OpenClaw',
+        'entryModel': 'gpt-5.6-sol',
+        'statusKey': 'gateway:health:gpt-5.6-sol',
+        'cooldownKey': 'deployment:gpt-5.6-sol:cooldown',
+    },
+    {
         'id': 'gpt-5.5',
         'label': 'OpenClaw gpt-5.5',
         'owner': 'OpenClaw',
@@ -1122,7 +1130,7 @@ UI_HTML = """<!doctype html>
     }
 
     function preferredChains(chains) {
-      const priority = new Map([['gpt-5.5', 0], ['gpt-5.4', 1]]);
+      const priority = new Map([['gpt-5.6-sol', 0], ['gpt-5.5', 1], ['gpt-5.4', 2]]);
       return (chains || []).slice().sort((a, b) => {
         const aRank = priority.has(a.entryModel) ? priority.get(a.entryModel) : 99;
         const bRank = priority.has(b.entryModel) ? priority.get(b.entryModel) : 99;

@@ -7,11 +7,11 @@ const envPath = `${rootDir}/.env`;
 const configPath = `${rootDir}/litellm/config.yaml`;
 const testModelName = 'gpt-5.4-ui-test';
 const testModelBaseUrl = 'https://ui-test.example.com/v1';
-const testModelApiKey = 'ui-test-api-key-placeholder';
+const testModelApiKey = 'sk-ui-test-1234567890';
 const editedBaseUrl = 'https://edited.example.com/v1';
-const editedApiKey = 'edit-test-api-key-placeholder';
+const editedApiKey = 'sk-edit-test-1234567890';
 const probeBaseUrl = 'https://probe.example.com/v1';
-const probeApiKey = 'probe-test-api-key-placeholder';
+const probeApiKey = 'sk-probe-test-1234567890';
 
 async function getRouterConfig(request) {
   const response = await request.get('/router-config');

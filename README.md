@@ -5,6 +5,7 @@ An opinionated LiteLLM gateway setup for running one public model behind multipl
 ## What It Does
 
 - Routes public model names such as Codex `gpt-5.5` and OpenClaw `gpt-5.4` to their own upstream fallback chains
+- Routes the current production `gpt-5.6-sol` chain alongside `gpt-5.5` and `gpt-5.4`
 - Uses Redis to persist router cooldown state across container restarts
 - Supports primary and fallback upstream chains
 - Exposes a small local WebUI to inspect, reorder, enable, disable, edit, add, and delete upstreams
@@ -149,6 +150,7 @@ Failover stats API:
 - Upstream API credentials are read from environment variables
 - Redis is used for router state persistence
 - `FAILOVER_STATS_CHAINS` labels multiple chains for the dashboard, for example Codex on `gpt-5.5` and OpenClaw on `gpt-5.4`
+- `FAILOVER_STATS_CHAINS` labels multiple chains for the dashboard, for example Codex on `gpt-5.5`, `gpt-5.6-sol`, and OpenClaw on `gpt-5.4`
 - Failover stats are stored under `logs/failover-stats-prod/`, which is intentionally ignored by git
 - The WebUI writes back to `litellm/config.yaml` and restarts the LiteLLM container
 

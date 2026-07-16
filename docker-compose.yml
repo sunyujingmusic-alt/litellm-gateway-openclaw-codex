@@ -135,6 +135,45 @@ services:
     networks:
       - gateway
 
+  primary-probe-gpt56-sol:
+    image: python:3.13-alpine
+    container_name: litellm-router-prod-primary-probe-gpt56-sol
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - litellm
+    environment:
+      REDIS_URL: redis://redis:6379
+      FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
+      FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
+      PROBE_DEPLOYMENT_ID: gpt-5.6-sol
+      PROBE_BASE_URL: ${CLAUDECODER_UPSTREAM_BASE_URL}
+      PROBE_API_KEY: ${CLAUDECODER_UPSTREAM_API_KEY}
+      PROBE_MODEL: openai/gpt-5.6-sol
+      PROBE_INTERVAL_SECONDS: "10"
+      PROBE_SUCCESS_THRESHOLD: "2"
+      PROBE_TIMEOUT_SECONDS: "5"
+      PROBE_STATUS_KEY: gateway:health:gpt-5.6-sol
+      PROBE_RECOVERY_URL: http://litellm:4000/internal/router/cooldown/{deployment_id}
+      PROBE_RECOVERY_METHOD: DELETE
+      PROBE_RECOVERY_API_KEY: ${PRIMARY_PROBE_ADMIN_KEY:?set PRIMARY_PROBE_ADMIN_KEY in .env}
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      NO_PROXY: ""
+      ALL_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      no_proxy: ""
+      all_proxy: ""
+    command:
+      - python
+      - /app/upstream_health_probe.py
+    volumes:
+      - ./scripts/upstream_health_probe.py:/app/upstream_health_probe.py:ro
+      - ./logs/failover-stats-prod:/app/failover-stats
+    networks:
+      - gateway
+
   failover-stats-api:
     image: python:3.13-alpine
     container_name: litellm-router-prod-stats
@@ -147,7 +186,7 @@ services:
       FAILOVER_STATS_DB_PATH: /app/failover-stats/failover_stats.sqlite3
       FAILOVER_STATS_JSONL_PATH: /app/failover-stats/failover_events.jsonl
       FAILOVER_STATS_PROMETHEUS_URL: http://litellm:4000/metrics/
-      FAILOVER_STATS_CHAINS: "OpenClaw gpt-5.5:gpt-5.5,gpt-5.5-popcorn,gpt-5.5-fsys;OpenClaw gpt-5.4:gpt-5.4,gpt-5.4-popcorn,gpt-5.4-fsys"
+      FAILOVER_STATS_CHAINS: "OpenClaw gpt-5.5:gpt-5.5,gpt-5.5-popcorn,gpt-5.5-fsys;OpenClaw gpt-5.6-sol:gpt-5.6-sol,gpt-5.6-sol-popcorn,gpt-5.6-sol-fsys;OpenClaw gpt-5.4:gpt-5.4,gpt-5.4-popcorn,gpt-5.4-fsys"
       FAILOVER_STATS_VUE_BUNDLE: /app/vendor/vue.global.prod.js
       FAILOVER_STATS_ALLOW_RESET: "1"
       FAILOVER_STATS_LOCAL_TZ_OFFSET_HOURS: "8"
